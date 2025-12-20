@@ -1,13 +1,13 @@
-const { PrismaClient } = require("@prisma/client");
-const { format, addDays, startOfDay, addMinutes, isBefore } = require("date-fns");
-const { toZonedTime, fromZonedTime } = require("date-fns-tz");
-const dotenv = require("dotenv");
+import { PrismaClient } from "@prisma/client";
+import { format, addDays, startOfDay, addMinutes, isBefore } from "date-fns";
+import { toZonedTime, fromZonedTime } from "date-fns-tz";
+import dotenv from "dotenv";
 
 dotenv.config();
 const prisma = new PrismaClient();
 const TIME_ZONE = "Europe/Berlin";
 
-function extractTime(iso) {
+function extractTime(iso: Date) {
     return iso.toISOString().substr(11, 5);
 }
 
