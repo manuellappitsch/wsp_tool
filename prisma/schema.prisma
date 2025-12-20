@@ -1,0 +1,462 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ========================================
+// ENUMS
+// ========================================
+
+enum GlobalAdminRole {
+  SUPER_ADMIN
+  ADMIN
+}
+
+enum InviteStatus {
+  PENDING
+  ACCEPTED
+}
+
+enum BookingStatus {
+  CONFIRMED
+  CANCELLED
+  COMPLETED
+  NO_SHOW
+}
+
+enum OrderStatus {
+  PENDING
+  READY
+  PICKED_UP
+  CANCELLED
+}
+
+// ========================================
+// GLOBAL ADMIN (WSP Verkäufer/Verwaltung)
+// ========================================
+
+model GlobalAdmin {
+  id           String          @id @default(cuid())
+  email        String          @unique
+  passwordHash String
+  firstName    String
+  lastName     String
+  role         GlobalAdminRole @default(ADMIN)
+  isActive     Boolean         @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("global_admins")
+}
+
+// ========================================
+// TENANT (B2B Firma)
+// ========================================
+
+model Tenant {
+  id              String  @id @default(cuid())
+  companyName     String
+  logoUrl         String?
+  primaryColor    String  @default("#1e3a5f") // Dark blue default
+  secondaryColor  String  @default("#ffffff")
+  dailyKontingent Int     @default(1) // Max simultaneous bookings per day
+  isActive        Boolean @default(true)
+
+  // Billing Info (Optional)
+  billingAddress  String?
+  billingZip      String?
+  billingCity     String?
+  billingEmail    String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  admins TenantAdmin[]
+  users  User[]
+
+  @@map("tenants")
+}
+
+// ========================================
+// TENANT ADMIN (Geschäftsführer Zugang)
+// ========================================
+
+model TenantAdmin {
+  id           String  @id @default(cuid())
+  email        String  @unique
+  passwordHash String?
+  firstName    String
+  lastName     String
+  phone        String?
+  isActive     Boolean @default(true)
+  initialPassword String? // For Admin visibility
+
+  // Invite flow
+  inviteToken  String?      @unique
+  inviteStatus InviteStatus @default(PENDING)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@map("tenant_admins")
+}
+
+// ========================================
+// USER (Mitarbeiter)
+// ========================================
+
+model User {
+  id           String  @id @default(cuid())
+  email        String  @unique
+  passwordHash String?
+  firstName    String
+  lastName     String
+  isActive     Boolean @default(true)
+
+  // Invite flow
+  inviteToken  String?      @unique
+  inviteStatus InviteStatus @default(PENDING)
+  
+  // Security (Admin Retrieval)
+  initialPassword String?   // Plain text storage for "Show Password" in Admin. Cleared on user change? No, keeps initial.
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+
+  // Relations
+  tenantId String
+  tenant   Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  bookings Booking[]
+  orders   Order[]
+  contentProgress UserContentProgress[]
+
+  @@map("users")
+}
+
+// ========================================
+// TIMESLOT (Verfügbare Termine)
+// ========================================
+
+model Timeslot {
+  id             String   @id @default(cuid())
+  date           DateTime @db.Date
+  startTime      DateTime @db.Time()
+  endTime        DateTime @db.Time()
+  globalCapacity Int      @default(10) // WSP total capacity for this slot (Legacy?)
+  capacity_points Int?    @default(20) // Current Points System Capacity
+  bookedCount    Int      @default(0) // Current bookings across all tenants
+  isBlocked      Boolean  @default(false)
+
+  createdAt DateTime @default(now())
+
+  // Relations
+  bookings Booking[]
+
+  @@unique([date, startTime])
+  @@map("timeslots")
+}
+
+// ========================================
+// BOOKING (Buchung)
+// ========================================
+
+model Booking {
+  id                 String        @id @default(cuid())
+  status             BookingStatus @default(CONFIRMED)
+  cancellationReason String?
+  reminderSentAt     DateTime?
+  notes              String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  
+  // Snapshot of cost/points at time of booking
+  care_level_snapshot Int @default(2)
+
+  // Relations
+  userId     String?   // Make optional to allow pure B2C bookings? Or keep required and use a placeholder user? 
+                       // Plan says "B2CCustomer logic". Usually B2B and B2C are mutually exclusive for a booking.
+                       // So userId should be optional if b2cCustomerId is present.
+  user       User?     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  b2cCustomerId String?
+  b2cCustomer   B2CCustomer? @relation(fields: [b2cCustomerId], references: [id], onDelete: Cascade)
+
+  timeslotId String
+  timeslot   Timeslot @relation(fields: [timeslotId], references: [id], onDelete: Cascade)
+
+  // Unique constraint might need adjustment if userId is optional.
+  // @@unique([userId, timeslotId]) -> This fails if userId is null.
+  // We should enforce unique Timeslot booking per person, but Prisma unique constraints with nulls are tricky.
+  // Ideally: One booking per timeslot per person.
+  // If userId is null, check b2cCustomerId.
+  // For now, let's keep it simple. If B2C, strict checking via code.
+
+  @@map("bookings")
+}
+
+// ========================================
+// PRODUCT CATEGORIES
+// ========================================
+
+model Category {
+  id          String  @id @default(cuid())
+  name        String
+  description String?
+  imageUrl    String?
+  sortOrder   Int     @default(0)
+  isActive    Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  products Product[]
+
+  @@map("categories")
+}
+
+// ========================================
+// B2C CUSTOMER (Walk-in / Private)
+// ========================================
+
+model B2CCustomer {
+  id        String   @id @default(cuid())
+  firstName String
+  lastName  String
+  email     String   @unique
+  phone     String?
+  credits   Int      @default(0) // Prepaid bookings available
+  careLevel Int      @default(2) // Default Weight for capacity
+  subscriptionEndDate DateTime? // If set and in future -> Flatrate Booking
+  notes     String?
+  isActive  Boolean  @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  bookings Booking[]
+
+  @@map("b2c_customers")
+}
+
+
+// ========================================
+// PRODUCT (Für Upsells/Shop)
+// ========================================
+
+model Product {
+  id          String  @id @default(cuid())
+  name        String
+  description String?
+  price       Decimal @db.Decimal(10, 2)
+  imageUrl    String?
+  isActive    Boolean @default(true)
+  sortOrder   Int     @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  categoryId String?
+  category   Category?   @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  orderItems OrderItem[]
+
+  @@map("products")
+}
+
+// ========================================
+// ORDER (Click & Collect Bestellungen)
+// ========================================
+
+model Order {
+  id          String      @id @default(cuid())
+  status      OrderStatus @default(PENDING)
+  pickupDate  DateTime    @db.Date
+  totalAmount Decimal     @db.Decimal(10, 2)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  userId String
+  user   User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  items  OrderItem[]
+
+  @@map("orders")
+}
+
+// ========================================
+// ORDER ITEM
+// ========================================
+
+model OrderItem {
+  id        String  @id @default(cuid())
+  quantity  Int     @default(1)
+  unitPrice Decimal @db.Decimal(10, 2)
+
+  // Relations
+  orderId   String
+  order     Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  productId String
+  product   Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@map("order_items")
+}
+
+// ========================================
+// SETTINGS (Globale Einstellungen)
+// ========================================
+
+model Setting {
+  id    String @id @default(cuid())
+  key   String @unique
+  value String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("settings")
+}
+
+// ========================================
+// BLOCKED DATES (Sperrtage)
+// ========================================
+
+model BlockedDate {
+  id     String   @id @default(cuid())
+  date   DateTime @unique @db.Date
+  reason String?
+
+  createdAt DateTime @default(now())
+
+  @@map("blocked_dates")
+}
+
+// ========================================
+// OPENING HOURS (Öffnungszeiten)
+// ========================================
+
+model OpeningHours {
+  id        String   @id @default(cuid())
+  dayOfWeek Int // 0 = Sunday, 1 = Monday, etc.
+  openTime  DateTime @db.Time()
+  closeTime DateTime @db.Time()
+  isClosed  Boolean  @default(false)
+
+  @@unique([dayOfWeek])
+  @@map("opening_hours")
+
+  // Relations
+  breaks OpeningBreak[]
+}
+
+model OpeningBreak {
+  id             String       @id @default(cuid())
+  startTime      DateTime     @db.Time()
+  endTime        DateTime     @db.Time()
+  name           String?      // e.g. "Mittagspause"
+
+  // Relations
+  openingHoursId String
+  openingHours   OpeningHours @relation(fields: [openingHoursId], references: [id], onDelete: Cascade)
+
+  @@map("opening_breaks")
+}
+
+// ========================================
+// CONTENT (Lern-Videos & PDFs)
+// ========================================
+
+enum ContentType {
+  VIDEO
+  PDF
+}
+
+model Course {
+  id          String   @id @default(cuid())
+  title       String
+  description String?
+  thumbnailUrl String?
+  sortOrder   Int      @default(0)
+  isActive    Boolean  @default(true)
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Relations
+  contents    Content[]
+
+  @@map("courses")
+}
+
+model Content {
+  id          String      @id @default(cuid())
+  title       String
+  description String?
+  type        ContentType
+  url         String      // External video URL or PDF download link
+  thumbnailUrl String?
+  isPremium   Boolean     @default(false) // If true, maybe restrict access?
+  sortOrder   Int         @default(0)
+  isActive    Boolean     @default(true)
+
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  // Relations
+  courseId    String?
+  course      Course?     @relation(fields: [courseId], references: [id], onDelete: SetNull)
+  progress    UserContentProgress[]
+
+  @@map("contents")
+}
+
+model UserContentProgress {
+  id        String   @id @default(cuid())
+  userId    String
+  contentId String
+  completed Boolean  @default(false)
+  viewedAt  DateTime @default(now())
+
+  // Relations
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  content Content @relation(fields: [contentId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, contentId])
+  @@map("user_content_progress")
+}
+
+// ========================================
+// KANBAN TASKS (Super Admin)
+// ========================================
+
+model KanbanTask {
+  id          String    @id @default(cuid())
+  title       String
+  description String?
+  status      String    @default("TODO") // TODO, PROGRESS, REVIEW, DONE
+  priority    String    @default("MEDIUM") // LOW, MEDIUM, HIGH
+  position    Int       @default(0)
+  dueDate     DateTime?
+  assignee    String?   // Name or Initials for simplicity (or relation if needed later)
+
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@map("kanban_tasks")
+}
