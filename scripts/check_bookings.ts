@@ -24,7 +24,9 @@ async function main() {
     } else {
         console.log("Recent Bookings:");
         bookings?.forEach(b => {
-            const who = b.user ? `User: ${b.user.firstName} ${b.user.lastName}` : (b.customer ? `Customer: ${b.customer.firstName} ${b.customer.lastName}` : "Unknown");
+            const user = Array.isArray(b.user) ? b.user[0] : b.user;
+            const customer = Array.isArray(b.customer) ? b.customer[0] : b.customer;
+            const who = user ? `User: ${user.firstName} ${user.lastName}` : (customer ? `Customer: ${customer.firstName} ${customer.lastName}` : "Unknown");
             console.log(`[${b.createdAt}] Slot: ${b.timeslotId} - ${who} - Level: ${b.care_level_snapshot}`);
         });
     }
