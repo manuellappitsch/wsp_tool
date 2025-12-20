@@ -15,7 +15,11 @@ import {
     DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 
-export function DashboardHeader() {
+interface DashboardHeaderProps {
+    userRole: string;
+}
+
+export function DashboardHeader({ userRole }: DashboardHeaderProps) {
     return (
         <header className="h-16 border-b border-gray-100 bg-white/80 backdrop-blur-md sticky top-0 z-30 flex items-center justify-between px-6">
 
@@ -28,7 +32,7 @@ export function DashboardHeader() {
                         </Button>
                     </SheetTrigger>
                     <SheetContent side="left" className="p-0">
-                        <Sidebar />
+                        <Sidebar userRole={userRole} />
                     </SheetContent>
                 </Sheet>
             </div>
