@@ -29,7 +29,7 @@ async function check() {
     // Group by Hour
     const counts: Record<string, number> = {};
     slots.forEach(s => {
-        const h = s.startTime.split(':')[0];
+        const h = s.startTime.toISOString().split('T')[1].split(':')[0];
         counts[h] = (counts[h] || 0) + 1;
     });
 
