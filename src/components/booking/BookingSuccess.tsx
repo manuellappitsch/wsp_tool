@@ -8,7 +8,7 @@ export function BookingSuccess() {
     return (
         <div className="flex flex-col items-center justify-center p-8 text-center space-y-6">
             <motion.div
-                initial={{ scale: 0, shadow: "0px 0px 0px rgba(0,0,0,0)" }}
+                initial={{ scale: 0, boxShadow: "0px 0px 0px rgba(0,0,0,0)" }}
                 animate={{
                     scale: 1,
                     boxShadow: "0px 10px 30px rgba(44, 200, 197, 0.4)"
