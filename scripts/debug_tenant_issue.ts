@@ -1,5 +1,5 @@
 
-const { PrismaClient } = require('@prisma/client');
+import { PrismaClient } from '@prisma/client';
 const prisma = new PrismaClient();
 
 async function main() {
@@ -12,7 +12,7 @@ async function main() {
         }
     });
 
-    const duplicates = distinctSlots.filter(s => s._count.id > 1);
+    const duplicates = distinctSlots.filter((s: any) => s._count.id > 1);
     console.log(`Found ${duplicates.length} timestamps with duplicate slots.`);
     if (duplicates.length > 0) {
         console.log("Example:", duplicates[0]);
@@ -51,7 +51,7 @@ async function main() {
     });
 
     bookings.forEach(b => {
-        console.log(`- ${b.timeslot.startTime.toISOString()} | User: ${b.user.email} | Status: ${b.status}`);
+        console.log(`- ${b.timeslot.startTime.toISOString()} | User: ${b.user ? b.user.email : 'Unknown'} | Status: ${b.status}`);
     });
 }
 
