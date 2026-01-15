@@ -12,8 +12,8 @@ import { Loader2 } from "lucide-react";
 
 interface Employee {
     id: string;
-    firstName: string;
-    lastName: string;
+    firstName: string | null;
+    lastName: string | null;
     email: string;
     isActive: boolean;
 }
@@ -113,7 +113,7 @@ export function EmployeeDialog({ open, onOpenChange, employeeToEdit }: EmployeeD
                             <Input
                                 id="firstName"
                                 name="firstName"
-                                defaultValue={employeeToEdit?.firstName}
+                                defaultValue={employeeToEdit?.firstName || ''}
                                 required
                             />
                         </div>
@@ -122,7 +122,7 @@ export function EmployeeDialog({ open, onOpenChange, employeeToEdit }: EmployeeD
                             <Input
                                 id="lastName"
                                 name="lastName"
-                                defaultValue={employeeToEdit?.lastName}
+                                defaultValue={employeeToEdit?.lastName || ''}
                                 required
                             />
                         </div>

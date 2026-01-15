@@ -31,8 +31,8 @@ import {
 
 interface Employee {
     id: string;
-    firstName: string;
-    lastName: string;
+    firstName: string | null;
+    lastName: string | null;
     email: string;
     isActive: boolean;
     createdAt: Date;
