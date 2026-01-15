@@ -40,9 +40,10 @@ interface Employee {
 
 interface UsersManagementClientProps {
     initialEmployees: Employee[];
+    tenantId: string;
 }
 
-export function UsersManagementClient({ initialEmployees }: UsersManagementClientProps) {
+export function UsersManagementClient({ initialEmployees, tenantId }: UsersManagementClientProps) {
     const [isDialogOpen, setIsDialogOpen] = useState(false);
     const [employeeToEdit, setEmployeeToEdit] = useState<Employee | null>(null);
 
