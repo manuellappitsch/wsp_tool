@@ -11,6 +11,7 @@ import { ArrowRight, Loader2, AlertCircle } from "lucide-react";
 import { signIn, getSession } from "next-auth/react";
 import { useRouter } from "next/navigation";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import Link from "next/link";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -41,6 +42,8 @@ export default function LoginPage() {
           router.push("/admin");
         } else if (session?.user?.role === "TENANT_ADMIN") {
           router.push("/tenant/dashboard");
+        } else if (session?.user?.role === "B2C_CUSTOMER") {
+          router.push("/b2c/dashboard");
         } else {
           router.push("/user/dashboard");
         }
@@ -137,6 +140,15 @@ export default function LoginPage() {
                     </>
                   )}
                 </Button>
+              </div>
+
+              <div className="text-center mt-2">
+                <p className="text-sm text-gray-500">
+                  Noch keinen Account?{" "}
+                  <Link href="/register" className="text-primary font-bold hover:underline">
+                    Jetzt registrieren
+                  </Link>
+                </p>
               </div>
             </form>
           </CardContent>

@@ -7,6 +7,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { addCustomerProduct } from "@/actions/customer";
 import { ShoppingBag } from "lucide-react";
+import { SUBSCRIPTION_PLANS } from "@/config/subscriptions";
 
 const initialState = {
     success: false,
@@ -57,8 +58,11 @@ export function AddProductDialog({ customerId, customerName }: Props) {
                                 <SelectItem value="BLOCK_10">10er Block (+10 Credits)</SelectItem>
                                 <SelectItem value="BLOCK_20">20er Block (+20 Credits)</SelectItem>
                                 <SelectItem value="BLOCK_30">30er Block (+30 Credits)</SelectItem>
-                                <SelectItem value="ABO_6">6 Monate Abo (bis +6 Mo)</SelectItem>
-                                <SelectItem value="ABO_12">12 Monate Abo (bis +12 Mo)</SelectItem>
+                                {Object.values(SUBSCRIPTION_PLANS).map((plan) => (
+                                    <SelectItem key={plan.id} value={plan.id}>
+                                        {plan.name} ({plan.price.toFixed(2)}€)
+                                    </SelectItem>
+                                ))}
                             </SelectContent>
                         </Select>
                     </div>

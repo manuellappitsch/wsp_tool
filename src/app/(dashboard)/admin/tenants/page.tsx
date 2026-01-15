@@ -1,5 +1,5 @@
 import React from "react";
-import { supabaseAdmin } from "@/lib/supabase-admin";
+import { db } from "@/lib/db";
 import { format } from "date-fns";
 import { de } from "date-fns/locale";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
@@ -19,23 +19,30 @@ export default async function AdminTenantsPage({ searchParams }: PageProps) {
 
     const whereStatus = isArchivedView ? false : true;
 
-    // Fetch tenants with all users (for the settings dialog)
-    // Note: In a large app, we would fetch users only when opening the dialog.
-    const { data: tenantsData, error } = await supabaseAdmin
-        .from('tenants')
-        .select(`
-            *,
-            users (*),
-            admins:tenant_admins (*)
-        `)
-        .eq('isActive', whereStatus)
-        .order('createdAt', { ascending: false });
+    // Fetch tenants with all profiles (employees + admins)
+    const tenantsData = await db.tenant.findMany({
+        where: {
+            isActive: whereStatus
+        },
+        include: {
+            profiles: true // Fetch all associated profiles to count them and pass to settings
+        },
+        orderBy: {
+            createdAt: 'desc'
+        }
+    });
 
     // Map the result
-    const tenants = tenantsData?.map((tenant: any) => ({
+    const tenants = tenantsData.map((tenant) => ({
         ...tenant,
-        _count: { users: tenant.users?.length || 0 }
-    })) || [];
+        // Count all profiles associated with this tenant
+        _count: { users: tenant.profiles.length },
+        // For compatibility with TenantSettingsDialog which expects 'users' and 'admins' arrays 
+        // derived from legacy tables, we map 'profiles' to satisfy the interface if needed.
+        // Or better: Update TenantSettingsDialog to accept 'profiles'.
+        // For now, let's pass 'users' as profiles.
+        users: tenant.profiles
+    }));
 
     return (
         <div className="space-y-8">
@@ -55,7 +62,7 @@ export default async function AdminTenantsPage({ searchParams }: PageProps) {
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                {tenants.map((tenant: any) => (
+                {tenants.map((tenant) => (
                     <Card key={tenant.id} className={`shadow-md hover:shadow-lg transition-shadow border-none ${!tenant.isActive ? 'opacity-75 bg-gray-50' : ''}`}>
                         <CardHeader className="flex flex-row items-start justify-between space-y-0 text-[#163B40]">
                             <div className="flex items-center gap-4">

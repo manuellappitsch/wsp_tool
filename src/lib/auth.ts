@@ -1,18 +1,17 @@
 import { NextAuthOptions } from "next-auth";
 import { SupabaseAdapter } from "@auth/supabase-adapter";
 import CredentialsProvider from "next-auth/providers/credentials";
-import bcrypt from "bcryptjs";
-import { supabaseAdmin } from "@/lib/supabase-admin";
+import { db } from "@/lib/db";
 
 // Use Supabase Adapter (API Mode) to bypass direct DB port 5432
 // This allows auth to work even if DB DNS is missing, as long as API is up.
 const adapter = SupabaseAdapter({
-    url: "https://dylocjiremrejotlrwdo.supabase.co",
-    secret: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImR5bG9jamlyZW1yZWpvdGxyd2RvIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc2NTcwODkzMiwiZXhwIjoyMDgxMjg0OTMyfQ.YtwuLaUdo80GLMHWSwXHUpNh2JlrwiuRXrjTEtQDG3k",
+    url: process.env.NEXT_PUBLIC_SUPABASE_URL || "https://dylocjiremrejotlrwdo.supabase.co",
+    secret: process.env.SUPABASE_SERVICE_ROLE_KEY || "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImR5bG9jamlyZW1yZWpvdGxyd2RvIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc2NTcwODkzMiwiZXhwIjoyMDgxMjg0OTMyfQ.YtwuLaUdo80GLMHWSwXHUpNh2JlrwiuRXrjTEtQDG3k",
 });
 
 export const authOptions: NextAuthOptions = {
-    adapter: adapter as any, // Cast to any because next-auth v4 types might mismatch
+    adapter: adapter as any,
     session: {
         strategy: "jwt",
     },
@@ -32,99 +31,68 @@ export const authOptions: NextAuthOptions = {
                     throw new Error("Invalid credentials");
                 }
 
-                // NOTE: We now fetch via Supabase API (No-SQL style)
-                // We check "GlobalAdmin" table first -> 'global_admins'
-                const { data: globalAdmin } = await supabaseAdmin
-                    .from('global_admins')
-                    .select('*')
-                    .eq('email', credentials.email)
-                    .single();
+                // 1. Verify Credentials via Supabase Auth API
+                // We use the REST API to avoid needing the Supabase Client in this specific context if tricky,
+                // BUT we can use a basic fetch to the token endpoint.
+                const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://dylocjiremrejotlrwdo.supabase.co";
+                const apiKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
 
-                if (globalAdmin) {
-                    if (!globalAdmin.isActive) throw new Error("Account inactive");
+                try {
+                    const authResponse = await fetch(`${supabaseUrl}/auth/v1/token?grant_type=password`, {
+                        method: "POST",
+                        headers: {
+                            "Content-Type": "application/json",
+                            "apikey": apiKey,
+                        },
+                        body: JSON.stringify({
+                            email: credentials.email,
+                            password: credentials.password,
+                        }),
+                    });
 
-                    const isValid = await bcrypt.compare(
-                        credentials.password,
-                        globalAdmin.passwordHash
-                    );
+                    if (!authResponse.ok) {
+                        const error = await authResponse.json();
+                        console.error("Supabase Auth Error:", error);
+                        // Map error messages if needed
+                        return null;
+                    }
 
-                    if (!isValid) throw new Error("Invalid password");
+                    const authData = await authResponse.json();
+                    const userId = authData.user.id; // This is the Auth UUID
 
-                    return {
-                        id: globalAdmin.id,
-                        email: globalAdmin.email,
-                        name: `${globalAdmin.firstName} ${globalAdmin.lastName}`,
-                        role: "GLOBAL_ADMIN",
-                        isGlobalAdmin: true,
-                    };
-                }
+                    // 2. Fetch Profile from Database
+                    // We check our local 'Profile' table which mirrors Auth Users + Metadata
+                    const profile = await db.profile.findUnique({
+                        where: { id: userId },
+                        include: { tenant: true } // Need tenant info for active check
+                    });
 
-                // 2. Check if it's a Tenant Admin -> 'tenant_admins'
-                const { data: tenantAdmin } = await supabaseAdmin
-                    .from('tenant_admins')
-                    .select('*, tenant:tenants(*)')
-                    .eq('email', credentials.email)
-                    .single();
+                    if (!profile) {
+                        // Profile missing (migration issue or corruption)
+                        console.error(`Profile not found for Auth ID: ${userId}`);
+                        return null;
+                    }
 
-                if (tenantAdmin) {
-                    // Check tenant status (nested object in supabase response)
-                    // @ts-ignore
-                    const tenant = tenantAdmin.tenant;
-                    if (!tenantAdmin.isActive || (tenant && !tenant.isActive)) {
+                    if (!profile.isActive) {
                         throw new Error("Account inactive");
                     }
 
-                    if (!tenantAdmin.passwordHash) throw new Error("Account not setup");
-
-                    const isValid = await bcrypt.compare(
-                        credentials.password,
-                        tenantAdmin.passwordHash
-                    );
-
-                    if (!isValid) throw new Error("Invalid password");
-
-                    return {
-                        id: tenantAdmin.id,
-                        email: tenantAdmin.email,
-                        name: `${tenantAdmin.firstName} ${tenantAdmin.lastName}`,
-                        role: "TENANT_ADMIN",
-                        tenantId: tenantAdmin.tenantId,
-                    };
-                }
-
-                // 3. User -> 'users'
-                const { data: user } = await supabaseAdmin
-                    .from('users')
-                    .select('*, tenant:tenants(*)')
-                    .eq('email', credentials.email)
-                    .single();
-
-                if (user) {
-                    // @ts-ignore
-                    const tenant = user.tenant;
-                    if (!user.isActive || (tenant && !tenant.isActive)) {
-                        throw new Error("Account inactive");
+                    if (profile.tenantId && profile.tenant && !profile.tenant.isActive) {
+                        throw new Error("Tenant account inactive");
                     }
 
-                    if (!user.passwordHash) throw new Error("Account not setup");
-
-                    const isValid = await bcrypt.compare(
-                        credentials.password,
-                        user.passwordHash
-                    );
-
-                    if (!isValid) throw new Error("Invalid password");
-
+                    // 3. Return User Object
                     return {
-                        id: user.id,
-                        email: user.email,
-                        name: `${user.firstName} ${user.lastName}`,
-                        role: "USER",
-                        tenantId: user.tenantId,
+                        id: profile.id,
+                        email: profile.email,
+                        name: `${profile.firstName || ''} ${profile.lastName || ''}`.trim(),
+                        role: profile.role,
+                        tenantId: profile.tenantId || undefined,
                     };
+                } catch (e) {
+                    console.error("Authorize Exception:", e);
+                    return null;
                 }
-
-                return null; // User not found
             },
         }),
     ],

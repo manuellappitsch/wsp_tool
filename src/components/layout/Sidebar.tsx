@@ -23,9 +23,10 @@ import { signOut } from "next-auth/react";
 interface SidebarProps {
     userRole: string; // GLOBAL_ADMIN, TENANT_ADMIN, USER
     className?: string;
+    unreadNotifications?: number;
 }
 
-export function Sidebar({ userRole, className }: SidebarProps) {
+export function Sidebar({ userRole, className, unreadNotifications = 0 }: SidebarProps) {
     const pathname = usePathname();
 
     const getNavItems = () => {
@@ -33,8 +34,9 @@ export function Sidebar({ userRole, className }: SidebarProps) {
             case "GLOBAL_ADMIN":
                 return [
                     { name: "Übersicht", href: "/admin", icon: LayoutDashboard },
+                    { name: "Benachrichtigungen", href: "/admin/notifications", icon: ClipboardList, badge: unreadNotifications },
                     { name: "Kalender", href: "/admin/calendar", icon: Calendar },
-                    { name: "Aufgaben", href: "/admin/tasks", icon: ClipboardList },
+                    { name: "To-do Liste", href: "/admin/tasks", icon: ClipboardList },
                     { name: "B2B Kunden", href: "/admin/tenants", icon: Building2 },
                     { name: "Privatkunden", href: "/admin/customers", icon: Users },
                     { name: "Einstellungen", href: "/admin/settings", icon: Settings },
@@ -42,7 +44,6 @@ export function Sidebar({ userRole, className }: SidebarProps) {
             case "TENANT_ADMIN":
                 return [
                     { name: "Dashboard", href: "/tenant/dashboard", icon: LayoutDashboard },
-                    // { name: "Kalender", href: "/tenant/calendar", icon: Calendar }, // Removed from Tenant
                     { name: "Mitarbeiter", href: "/tenant/users", icon: Users },
                     { name: "Analysen", href: "/tenant/analytics", icon: BarChart3 },
                     { name: "Content", href: "/tenant/content", icon: Video },
@@ -52,7 +53,7 @@ export function Sidebar({ userRole, className }: SidebarProps) {
             case "USER":
                 return [
                     { name: "Mein Training", href: "/user/dashboard", icon: Calendar },
-                    { name: "Termine Buchen", href: "/user/booking", icon: Calendar }, // Or merge?
+                    { name: "Termine Buchen", href: "/user/booking", icon: Calendar },
                     { name: "Shop", href: "/user/shop", icon: ShoppingBag },
                     { name: "Wissen", href: "/user/content", icon: FileText },
                 ];
@@ -66,7 +67,6 @@ export function Sidebar({ userRole, className }: SidebarProps) {
     return (
         <div className={cn("flex flex-col h-full bg-white border-r w-64", className)}>
             <div className="p-6">
-                {/* Branding is in Header really, but could be here too. */}
                 <h2 className="text-lg font-bold text-[#163B40]">Menu</h2>
             </div>
 
@@ -78,14 +78,21 @@ export function Sidebar({ userRole, className }: SidebarProps) {
                             key={item.href}
                             href={item.href}
                             className={cn(
-                                "flex items-center gap-3 px-4 py-3 text-sm font-medium rounded-md transition-colors",
+                                "flex items-center justify-between px-4 py-3 text-sm font-medium rounded-md transition-colors",
                                 isActive
                                     ? "bg-[#163B40] text-white"
                                     : "text-gray-700 hover:bg-gray-100"
                             )}
                         >
-                            <item.icon className="h-5 w-5" />
-                            {item.name}
+                            <div className="flex items-center gap-3">
+                                <item.icon className="h-5 w-5" />
+                                {item.name}
+                            </div>
+                            {item.badge ? (
+                                <span className="bg-red-500 text-white text-[10px] font-bold px-2 py-0.5 rounded-full min-w-[20px] text-center">
+                                    {item.badge}
+                                </span>
+                            ) : null}
                         </Link>
                     );
                 })}

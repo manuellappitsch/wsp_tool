@@ -8,21 +8,21 @@ import { format } from "date-fns";
 
 export async function getAvailableSlots(date: Date) {
     try {
-        // Format date for query (start and end of day)
-        // Adjust for timezone if needed, but for now assuming UTC/ISO strings match
-        const startOfDay = new Date(date);
-        startOfDay.setHours(0, 0, 0, 0);
+        // Fix: Use strict YYYY-MM-DD filtering to avoid timezone overlaps
+        const dateStr = format(date, "yyyy-MM-dd");
 
-        const endOfDay = new Date(date);
-        endOfDay.setHours(23, 59, 59, 999);
+        // Create a UTC date at noon to ensure we hit the correct day in DB regardless of small offsets
+        // Postgres DATE type stores YYYY-MM-DD. Prisma maps JS Date to that.
+        const queryDate = new Date(`${dateStr}T12:00:00Z`);
 
         const slots = await db.timeslot.findMany({
             where: {
-                date: {
-                    gte: startOfDay,
-                    lte: endOfDay
-                },
-                isBlocked: false
+                date: queryDate,
+                isBlocked: false,
+                type: 'NORMAL', // Only show normal slots to users/B2C
+                startTime: {
+                    gt: new Date() // Hide past slots
+                }
             },
             orderBy: {
                 startTime: 'asc'
@@ -30,12 +30,10 @@ export async function getAvailableSlots(date: Date) {
         });
 
         // Map to simple strings "HH:mm" for the UI, but we also need ID for booking
-        // The UI currently expects just a list of strings for the picker, 
-        // but we should probably change the UI to handle objects if we want to pass IDs.
-        // For now, let's return objects.
         return slots.map(slot => ({
             id: slot.id,
-            time: format(slot.startTime, "HH:mm"),
+            // Force UTC extraction to avoid timezone shifts (Server Time vs Display Time)
+            time: slot.startTime.toISOString().substring(11, 16),
             available: (slot.bookedCount < slot.globalCapacity) // Simple check
         }));
 
@@ -53,35 +51,223 @@ export async function bookSlot(slotId: string) {
             return { error: "Nicht eingeloggt." };
         }
 
-        // Call the secure RPC we fixed earlier
-        // We use a raw query because Prisma doesn't natively support easy RPC calls with return values typed perfectly
-        const result = await db.$queryRaw`
-            SELECT * FROM book_training_slot(${slotId}, ${session.user.email})
-        `;
+        const { BookingService } = await import("@/lib/booking-service");
 
-        // Result is an array like [{ book_training_slot: { success: true, bookingId: ... } }]
-        // Postgres JSON return type often needs parsing or access
+        // Unified User ID (Profile)
+        const userId = session.user.id;
 
-        const response: any = result;
-        const data = response[0]?.book_training_slot; // Depends on driver, usually it's this or flat
+        const result = await BookingService.createBooking({ userId }, slotId);
 
-        // If using Prisma w/ pg adapter, it might be slightly different. 
-        // Let's safe check.
+        if (result.success) {
+            // Create Admin Notification (Safe Mode)
+            try {
+                const { createAdminNotification } = await import("@/actions/notifications");
+                const { format } = await import("date-fns"); // Ensure available
 
-        if (!data) {
-            return { error: "Unbekannter Fehler bei der Buchung." };
-        }
+                const newBooking = await db.booking.findUnique({
+                    where: { id: result.bookingId },
+                    include: { timeslot: true, user: { include: { tenant: true } } }
+                });
 
-        if (data.success) {
+                if (newBooking) {
+                    const name = `${newBooking.user?.firstName || ''} ${newBooking.user?.lastName || ''}`;
+                    const tenantName = newBooking.user?.tenant?.companyName ? ` (${newBooking.user.tenant.companyName})` : '';
+
+                    const dateStr = format(newBooking.timeslot.date, "dd.MM.yyyy");
+                    const timeStr = format(newBooking.timeslot.startTime, "HH:mm");
+
+                    await createAdminNotification({
+                        title: `✅ Neue Buchung: ${name}${tenantName}`,
+                        message: `Termin am ${dateStr} um ${timeStr} Uhr wurde gebucht.`,
+                        type: "SUCCESS"
+                    });
+                }
+            } catch (notifError) {
+                console.error("Failed to send admin notification for booking:", notifError);
+            }
+
             revalidatePath("/user/booking");
             revalidatePath("/user/dashboard");
-            return { success: true, bookingId: data.bookingId };
+            revalidatePath("/b2c/dashboard");
+            revalidatePath("/admin"); // Refresh admin dashboard stats
+            return { success: true, bookingId: result.bookingId };
         } else {
-            return { error: data.error || "Buchung fehlgeschlagen." };
+            // Map internal error codes to user friendly messages if needed
+            let msg = result.reason || "Buchung fehlgeschlagen.";
+            if (result.code === "SUBSCRIPTION_LIMIT_REACHED") msg = result.reason;
+            if (result.code === "INSUFFICIENT_CREDITS") msg = "Kein Guthaben und kein aktives Abo vorhanden.";
+            if (result.code === "USER_ALREADY_BOOKED" || result.code === "DUPLICATE_BOOKING") msg = "Du hast diesen Termin bereits gebucht.";
+
+            return { error: msg };
         }
 
     } catch (error) {
         console.error("Booking Error:", error);
         return { error: "Systemfehler bei der Buchung." };
+    }
+}
+
+export async function cancelSlot(bookingId: string) {
+    try {
+        const session = await getServerSession(authOptions);
+        if (!session || !session.user) {
+            return { error: "Nicht eingeloggt." };
+        }
+
+        const userId = session.user.id;
+
+        // Verify Ownership
+        const booking = await db.booking.findUnique({
+            where: { id: bookingId },
+            include: {
+                timeslot: true,
+                user: { include: { tenant: true } },
+            }
+        });
+
+        if (!booking) return { error: "Buchung nicht gefunden." };
+
+        // Check ownership
+        if (booking.userId !== userId) {
+            // Maybe Admin can cancel any? Or Tenant Admin?
+            // For now specific "cancelSlot" action implies User Action.
+            // Admins probably use a different action or we allow if Role is Admin.
+            // Let's stick to Owner Only for this action as it's typically used in User Dashboard.
+            return { error: "Nicht autorisiert." };
+        }
+
+        if (booking.status === "CANCELLED") {
+            return { error: "Bereits storniert." };
+        }
+
+        // 1. Update Booking Status
+        await db.booking.update({
+            where: { id: bookingId },
+            data: { status: "CANCELLED" }
+        });
+
+        // 2. Decrement Timeslot bookedCount
+        await db.timeslot.update({
+            where: { id: booking.timeslotId },
+            data: { bookedCount: { decrement: 1 } }
+        });
+
+        // 3. Logic: Refund Credit? (Only B2C Customers)
+        const profile = booking.user;
+        if (profile.role === "B2C_CUSTOMER") {
+            const slotDate = new Date(booking.timeslot.date);
+            const slotTime = new Date(booking.timeslot.startTime);
+            const now = new Date();
+
+            // Calculate hours until start
+            const diffInMilliseconds = slotTime.getTime() - now.getTime();
+            const diffInHours = diffInMilliseconds / (1000 * 60 * 60);
+
+            const subEndDate = profile.subscriptionEndDate ? new Date(profile.subscriptionEndDate) : null;
+            const isCoveredBySubscription = subEndDate && subEndDate >= slotDate;
+
+            if (!isCoveredBySubscription) {
+                // Was paid by Credit -> Refund ONLY if > 24h
+                if (diffInHours > 24) {
+                    await db.profile.update({
+                        where: { id: profile.id },
+                        data: { credits: { increment: 1 } }
+                    });
+                }
+                // Else: Credit forfeited (Penalty)
+            }
+        }
+
+        // 4. Create Admin Notification
+        const name = `${booking.user?.firstName || ''} ${booking.user?.lastName || ''}`;
+        const dateStr = format(booking.timeslot.date, "dd.MM.yyyy");
+        const timeStr = format(booking.timeslot.startTime, "HH:mm");
+
+        const { createAdminNotification } = await import("@/actions/notifications");
+
+        await createAdminNotification({
+            title: `❌ Stornierung: ${name}`,
+            message: `Der Termin am ${dateStr} um ${timeStr} Uhr wurde vom Benutzer storniert.`,
+            type: "CANCEL"
+        });
+
+        // 5. EMAIL NOTIFICATION TO USER
+        const recipient = booking.user;
+        if (recipient && recipient.email && booking.timeslot) {
+            try {
+                if (recipient.emailNotifications === false) {
+                    // Skip
+                } else {
+                    const { sendEmail, EMAIL_SENDER_SUPPORT } = await import("@/lib/resend");
+                    const { EmailTemplates } = await import("@/lib/email-templates");
+                    const { de } = await import("date-fns/locale");
+
+                    const d = format(booking.timeslot.date, "dd.MM.yyyy", { locale: de });
+                    const t = format(booking.timeslot.startTime, "HH:mm", { locale: de });
+                    const dateString = `${d} um ${t}`;
+
+                    await sendEmail({
+                        to: recipient.email,
+                        subject: "Schade – Dein Training wurde storniert",
+                        html: EmailTemplates.cancellation(recipient.firstName || "Kunde", dateString),
+                        from: EMAIL_SENDER_SUPPORT
+                    });
+                }
+            } catch (e) {
+                console.error("Failed to send cancellation email:", e);
+            }
+        }
+
+        revalidatePath("/user/booking");
+        revalidatePath("/user/dashboard");
+        revalidatePath("/b2c/dashboard");
+        revalidatePath("/admin/tasks");
+        revalidatePath("/admin/calendar");
+
+        return { success: true };
+
+    } catch (error) {
+        console.error("Cancellation Error:", error);
+        return { error: "Fehler beim Stornieren." };
+    }
+}
+
+export async function getMyFutureBookings() {
+    try {
+        const session = await getServerSession(authOptions);
+        if (!session || !session.user) return [];
+
+        const userId = session.user.id;
+
+        const bookings = await db.booking.findMany({
+            where: {
+                userId: userId,
+                status: { not: "CANCELLED" },
+                timeslot: {
+                    date: { gt: new Date() }
+                }
+            },
+            include: {
+                timeslot: true
+            },
+            orderBy: {
+                timeslot: { date: "asc" }
+            }
+        });
+
+        // Clean up for Client
+        return bookings.map(b => ({
+            id: b.id,
+            date: b.timeslot.date, // Date Object
+            time: b.timeslot.startTime, // Date Object
+            status: b.status,
+            formattedDate: format(b.timeslot.date, "dd.MM.yyyy"),
+            formattedTime: format(b.timeslot.startTime, "HH:mm"),
+            timeslotId: b.timeslotId
+        }));
+
+    } catch (e) {
+        console.error("Fetch Future Bookings Error:", e);
+        return [];
     }
 }

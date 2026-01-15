@@ -1,6 +1,12 @@
-import { supabaseAdmin } from "@/lib/supabase-admin";
-import { startOfDay, endOfDay } from "date-fns";
+import { db } from "@/lib/db";
+import { startOfDay, endOfDay, differenceInMonths, addMonths } from "date-fns";
 import { createId } from "@paralleldrive/cuid2";
+import { SubscriptionType } from "@prisma/client";
+import { getSubscriptionLimit } from "@/config/subscriptions";
+import { EmailTemplates } from "@/lib/email-templates"; // Dynamic imports in method to avoid cycles if any? No, static here is fine.
+import { sendEmail, EMAIL_SENDER_SUPPORT } from "@/lib/resend";
+import { format } from "date-fns";
+import { de } from "date-fns/locale";
 
 export type BookingResult =
     | { success: true; bookingId: string }
@@ -8,134 +14,203 @@ export type BookingResult =
 
 export class BookingService {
     /**
-     * Validates if a user (B2B) or Customer (B2C) can book a specific timeslot.
-     * 1. If B2B (userId provided): Check Tenant Quota & User Duplicates.
-     * 2. If B2C (b2cCustomerId provided): Check Credits.
-     * 3. Always: Check Global Capacity (Points System).
+     * Validates if a Profile can book a specific timeslot.
+     * Handles both B2B (Tenant Quotas) and B2C (Subscriptions/Credits).
      */
     static async validateBookingEligibility(
-        { userId, b2cCustomerId }: { userId?: string, b2cCustomerId?: string },
+        { userId }: { userId: string },
         timeslotId: string,
         careLevel: number = 2
     ): Promise<{ valid: boolean; error?: string; code?: string }> {
 
-        const { data: timeslot, error: slotError } = await supabaseAdmin
-            .from('timeslots')
-            .select('*')
-            .eq('id', timeslotId)
-            .single();
-
-        if (slotError) console.error("BookingService: Slot Lookup Error:", slotError);
+        // 1. Fetch Timeslot
+        const timeslot = await db.timeslot.findUnique({
+            where: { id: timeslotId }
+        });
 
         if (!timeslot) {
             return { valid: false, error: `Timeslot not found (ID: ${timeslotId})`, code: "SLOT_INVALID" };
         }
+
         if (timeslot.isBlocked) {
             return { valid: false, error: "Timeslot is blocked", code: "SLOT_BLOCKED" };
         }
 
-        // Global Capacity Check (Points)
-        const capacityPoints = timeslot.capacity_points || 20;
-        const { data: slotBookings } = await supabaseAdmin
-            .from('bookings')
-            .select('care_level_snapshot')
-            .eq('timeslotId', timeslotId)
-            .neq('status', 'CANCELLED');
+        // Check if slot is in the past
+        const slotDate = new Date(timeslot.date);
+        const slotTime = new Date(timeslot.startTime);
 
-        const currentPoints = slotBookings?.reduce((sum, b) => sum + (b.care_level_snapshot || 2), 0) || 0;
+        // Robust combination of Date and Time to support both Full DateTime and Time-Only formats
+        const realStart = new Date(slotDate);
+        realStart.setHours(slotTime.getUTCHours(), slotTime.getUTCMinutes(), 0, 0);
+
+        // Adjust for potential timezone mismatch if DB stores date as UTC midnight but time as UTC
+        // Ideally we trust Prisma Date objects. 
+        // If realStart is wildly off (e.g. 1970), it means slotDate was wrong, but slotDate is usually correct.
+
+        if (realStart < new Date()) {
+            return { valid: false, error: "Termine in der Vergangenheit können nicht gebucht werden.", code: "SLOT_IN_PAST" };
+        }
+
+        // 2. Global Capacity Check (Points)
+        const capacityPoints = timeslot.capacity_points || 20;
+
+        // Sum existing bookings points
+        // Aggregate specific field
+        const result = await db.booking.aggregate({
+            _sum: {
+                care_level_snapshot: true
+            },
+            where: {
+                timeslotId: timeslotId,
+                status: { not: "CANCELLED" }
+            }
+        });
+
+        const currentPoints = result._sum.care_level_snapshot || 0;
 
         if (currentPoints + careLevel > capacityPoints) {
             return { valid: false, error: "Global capacity reached for this slot", code: "GLOBAL_CAPACITY_FULL" };
         }
 
-        // --- 2. B2B Specific Logic ---
-        if (userId) {
-            const { data: user } = await supabaseAdmin
-                .from('users')
-                .select('*, tenant:tenants(*)')
-                .eq('id', userId)
-                .single();
+        // 3. Fetch Profile
+        const profile = await db.profile.findUnique({
+            where: { id: userId },
+            include: { tenant: true }
+        });
 
-            // @ts-ignore
-            const tenant = user?.tenant;
-            if (!tenant) return { valid: false, error: "Tenant not found", code: "USER_INVALID" };
+        if (!profile) return { valid: false, error: "User profile not found", code: "USER_INVALID" };
 
-            // Check Daily Limit (User)
-            // ... (Same logic as before for user today) ...
-            // Simplified check for now:
-            const { data: userBookingToday } = await supabaseAdmin
-                .from('bookings')
-                .select('id, timeslot:timeslots!inner(date)')
-                .eq('userId', userId)
-                .eq('timeslot.date', timeslot.date) // This works if we trust exact string match, better use ID filter
-                .neq('status', 'CANCELLED')
-                .maybeSingle(); // Use maybeSingle to avoid 406 error if multiple (shouldn't happen but safe) but we want just one check.
+        const isB2B = profile.role === "USER" || profile.role === "TENANT_ADMIN";
+        const isB2C = profile.role === "B2C_CUSTOMER";
 
-            // Actually, we need to be careful with nested filtering in Supabase.
-            // Let's use the Date-Time Slots lookup pattern again for safety.
-            const { data: slotsOnDate } = await supabaseAdmin.from('timeslots').select('id').eq('date', timeslot.date);
-            const slotIds = slotsOnDate?.map(s => s.id) || [];
+        // --- B2B Specific Logic ---
+        if (isB2B) {
+            const tenant = profile.tenant;
+            if (!tenant) return { valid: false, error: "Tenant not found for employee", code: "USER_INVALID" };
 
-            const { count } = await supabaseAdmin
-                .from('bookings')
-                .select('*', { count: 'exact', head: true })
-                .in('timeslotId', slotIds)
-                .eq('userId', userId)
-                .neq('status', 'CANCELLED');
+            // Determine Quota Strategy
+            const quotaType = tenant.quotaType || "NORMAL";
+            const bookingDate = timeslot.date;
 
-            if (count && count > 0) return { valid: false, error: "User already booked today", code: "USER_ALREADY_BOOKED" };
+            if (quotaType === "SPECIAL") {
+                // SPECIAL: Max 1 Booking per DAY (User)
+                // Filter slots on SAME DAY
+                const count = await db.booking.count({
+                    where: {
+                        userId: userId,
+                        status: { not: "CANCELLED" },
+                        timeslot: {
+                            date: bookingDate // Exact match on date
+                        }
+                    }
+                });
 
-            // Check Company Quota
-            const { count: tenantCount } = await supabaseAdmin
-                .from('bookings')
-                .select('*, user:users!inner(tenantId)', { count: 'exact', head: true })
-                .in('timeslotId', slotIds)
-                .eq('user.tenantId', tenant.id)
-                .neq('status', 'CANCELLED');
+                if (count >= 1) {
+                    return { valid: false, error: "Ihr 'Special' Kontingent erlaubt nur 1 Training pro Tag.", code: "USER_QUOTA_EXCEEDED_DAILY" };
+                }
+            } else {
+                // NORMAL: Max 4 Bookings per MONTH (User)
+                const startOfMonth = new Date(bookingDate.getFullYear(), bookingDate.getMonth(), 1);
+                const endOfMonth = new Date(bookingDate.getFullYear(), bookingDate.getMonth() + 1, 0, 23, 59, 59);
 
-            if ((tenantCount || 0) >= tenant.dailyKontingent) {
-                return { valid: false, error: "Company quota reached", code: "TENANT_QUOTA_EXCEEDED" };
-            }
-        }
-        // --- 3. B2C Specific Logic ---
-        else if (b2cCustomerId) {
-            const { data: customer } = await supabaseAdmin
-                .from('b2c_customers')
-                .select('*')
-                .eq('id', b2cCustomerId)
-                .single();
+                const count = await db.booking.count({
+                    where: {
+                        userId: userId,
+                        status: { not: "CANCELLED" },
+                        timeslot: {
+                            date: {
+                                gte: startOfMonth,
+                                lte: endOfMonth
+                            }
+                        }
+                    }
+                });
 
-            if (!customer) {
-                return { valid: false, error: "B2C Customer not found", code: "CUSTOMER_INVALID" };
-            }
-
-            if (!customer.isActive) {
-                return { valid: false, error: "Customer account is inactive", code: "CUSTOMER_INACTIVE" };
-            }
-
-            if (customer.credits < 1) {
-                // Check if Subscription covers it
-                const hasActiveSubscription = customer.subscriptionEndDate && new Date(customer.subscriptionEndDate) > new Date();
-
-                if (!hasActiveSubscription) {
-                    return { valid: false, error: "Not enough credits and no active subscription", code: "INSUFFICIENT_CREDITS" };
+                if (count >= 4) {
+                    return { valid: false, error: "Ihr Kontingent ist erschöpft (Max. 4 Trainings pro Monat).", code: "USER_QUOTA_EXCEEDED_MONTHLY" };
                 }
             }
 
-            // Check B2C Duplicates? (Optional, maybe allowed for paying customers)
-            // Let's prevent double booking same slot at least.
-            const { data: existingBooking } = await supabaseAdmin
-                .from('bookings')
-                .select('id')
-                .eq('timeslotId', timeslotId)
-                .eq('b2cCustomerId', b2cCustomerId)
-                .neq('status', 'CANCELLED')
-                .single();
+            // Check Company Global Daily Limit (Regardless of User Type)
+            const tenantCount = await db.booking.count({
+                where: {
+                    timeslot: {
+                        date: bookingDate
+                    },
+                    status: { not: "CANCELLED" },
+                    user: {
+                        tenantId: tenant.id
+                    }
+                }
+            });
 
-            if (existingBooking) {
-                return { valid: false, error: "Customer already booked this slot", code: "DUPLICATE_BOOKING" };
+            if (tenantCount >= tenant.dailyKontingent) {
+                return { valid: false, error: "Tages-Kontingent Ihrer Firma ist erschöpft.", code: "TENANT_QUOTA_EXCEEDED" };
+            }
+        }
+        // --- B2C Specific Logic ---
+        else if (isB2C) {
+
+            if (!profile.isActive) {
+                return { valid: false, error: "Customer account is inactive", code: "CUSTOMER_INACTIVE" };
             }
 
+            // Check Subscription Status for this specific SLOT
+            const slotDate = timeslot.date;
+            const subEndDate = profile.subscriptionEndDate;
+            const isCoveredBySubscription = subEndDate && subEndDate >= slotDate;
+
+            if (isCoveredBySubscription && profile.subscriptionStartDate && profile.subscriptionType) {
+                // --- SUBSCRIPTION QUOTA LOGIC ---
+                const startDate = profile.subscriptionStartDate;
+
+                // Calculate which "Contract Month" this slot belongs to
+                // Note: differenceInMonths might return integer, check fractional?
+                // Using start of contract logic
+                const slotMonthIndex = differenceInMonths(slotDate, startDate);
+
+                const limit = getSubscriptionLimit(profile.subscriptionType, slotMonthIndex);
+
+                const intervalStart = addMonths(startDate, slotMonthIndex);
+                const intervalEnd = addMonths(startDate, slotMonthIndex + 1);
+
+                const usageCount = await db.booking.count({
+                    where: {
+                        userId: userId,
+                        status: { not: "CANCELLED" },
+                        timeslot: {
+                            date: {
+                                gte: intervalStart,
+                                lt: intervalEnd
+                            }
+                        }
+                    }
+                });
+
+                if (usageCount >= limit) {
+                    return { valid: false, error: `Monatslimit erreicht (${usageCount}/${limit} Trainings)`, code: "SUBSCRIPTION_LIMIT_REACHED" };
+                }
+
+            } else {
+                // --- FALLBACK TO CREDITS ---
+                if ((profile.credits || 0) < 1) {
+                    return { valid: false, error: "Kein Guthaben und kein aktives Abo für diesen Termin", code: "INSUFFICIENT_CREDITS" };
+                }
+            }
+        }
+
+        // Check User Duplicates (Double Booking)
+        const existing = await db.booking.findFirst({
+            where: {
+                timeslotId: timeslotId,
+                userId: userId,
+                status: { not: "CANCELLED" }
+            }
+        });
+
+        if (existing) {
+            return { valid: false, error: "Du hast diesen Termin bereits gebucht", code: "DUPLICATE_BOOKING" };
         }
 
         return { valid: true };
@@ -145,129 +220,109 @@ export class BookingService {
      * Executes the booking transaction
      */
     static async createBooking(
-        { userId, b2cCustomerId }: { userId?: string, b2cCustomerId?: string },
+        { userId }: { userId: string },
         timeslotId: string,
         notes?: string
     ): Promise<BookingResult> {
-        // Standard B2B User Care Level = 2
-        // If B2C, we might want to check if they have a specific level or just use default 1/2? 
-        // For now, hardcode 2 for safety.
-        const careLevel = 2;
+        const careLevel = 2; // Default
 
-        // Run validation first
-        const eligibility = await this.validateBookingEligibility({ userId, b2cCustomerId }, timeslotId, careLevel);
+        // 1. Validate First (Read-only check)
+        const eligibility = await this.validateBookingEligibility({ userId }, timeslotId, careLevel);
         if (!eligibility.valid) {
             return { success: false, reason: eligibility.error!, code: eligibility.code! };
         }
 
         try {
-            // 1. Re-check capacity (Optimistic Lock simulation)
-            // Fetch slot and calculate current points again
-            const { data: timeslot } = await supabaseAdmin
-                .from('timeslots')
-                .select('*')
-                .eq('id', timeslotId)
-                .single();
+            // Transaction
+            const result = await db.$transaction(async (tx) => {
+                // Optimistic Lock Check: Re-fetch Capacity
+                // We can't easily lock properly without raw SQL, but transaction helps atomicity.
 
-            const capacityPoints = timeslot.capacity_points || 20;
+                const timeslot = await tx.timeslot.findUniqueOrThrow({ where: { id: timeslotId } });
+                const capacityPoints = timeslot.capacity_points || 20;
 
-            const { data: slotBookings } = await supabaseAdmin
-                .from('bookings')
-                .select('care_level_snapshot')
-                .eq('timeslotId', timeslotId)
-                .neq('status', 'CANCELLED');
+                const pointResult = await tx.booking.aggregate({
+                    _sum: { care_level_snapshot: true },
+                    where: { timeslotId, status: { not: "CANCELLED" } }
+                });
+                const currentPoints = pointResult._sum.care_level_snapshot || 0;
 
-            const currentPoints = slotBookings?.reduce((sum, b) => sum + (b.care_level_snapshot || 2), 0) || 0;
-
-            if (currentPoints + careLevel > capacityPoints) {
-                return { success: false, reason: "Slot became full during booking", code: "GLOBAL_CAPACITY_FULL" };
-            }
-
-            // 2. Increment global counter (Legacy/Visual support)
-            const { error: updateError } = await supabaseAdmin
-                .from('timeslots')
-                .update({ bookedCount: (timeslot.bookedCount || 0) + 1 })
-                .eq('id', timeslotId);
-
-            if (updateError) throw updateError;
-
-            // 2b. Deduct credits if B2C (ONLY if no active subscription)
-            if (b2cCustomerId) {
-                const { data: customer } = await supabaseAdmin
-                    .from('b2c_customers')
-                    .select('credits, subscriptionEndDate')
-                    .eq('id', b2cCustomerId)
-                    .single();
-
-                if (customer) {
-                    const hasActiveSubscription = customer.subscriptionEndDate && new Date(customer.subscriptionEndDate) > new Date();
-
-                    if (!hasActiveSubscription) {
-                        // Deduct Credit only if no subscription
-                        await supabaseAdmin
-                            .from('b2c_customers')
-                            .update({ credits: customer.credits - 1 })
-                            .eq('id', b2cCustomerId);
-                    }
+                if (currentPoints + careLevel > capacityPoints) {
+                    throw new Error("GLOBAL_CAPACITY_FULL");
                 }
-            }
 
-            // 3. Create booking
-            const { data: booking, error: createError } = await supabaseAdmin
-                .from('bookings')
-                .insert({
-                    id: createId(),
-                    userId, // Can be undefined
-                    b2cCustomerId, // Can be undefined
-                    timeslotId,
-                    status: "CONFIRMED",
-                    notes,
-                    care_level_snapshot: careLevel,
-                    updatedAt: new Date().toISOString()
-                })
-                .select('*, user:users(*), timeslot:timeslots(*)') // Include for email
-                .single();
+                // Increment Booked Count (Legacy)
+                await tx.timeslot.update({
+                    where: { id: timeslotId },
+                    data: { bookedCount: { increment: 1 } }
+                });
 
-            if (createError) {
-                console.error("Booking Insert Failed:", createError);
-                throw createError;
-            }
+                // Fetch Profile for Credit Check
+                const profile = await tx.profile.findUniqueOrThrow({ where: { id: userId } });
+                const isB2C = profile.role === "B2C_CUSTOMER";
 
-            // 4. Send Confirmation Email (Only for B2B Users currently)
-            if (booking?.user?.email) {
-                try {
-                    // @ts-ignore
-                    const user = booking.user;
-                    // @ts-ignore
-                    const timeslot = booking.timeslot;
+                if (isB2C) {
+                    const slotDate = timeslot.date;
+                    const subEndDate = profile.subscriptionEndDate;
+                    const isCoveredBySubscription = subEndDate && subEndDate >= slotDate;
 
-                    if (user && user.email && timeslot) {
-                        const { sendEmail } = await import("@/lib/resend");
-                        const { EmailTemplates } = await import("@/lib/email-templates");
-                        const { format } = await import("date-fns");
-                        const { de } = await import("date-fns/locale");
-
-                        const dateObj = new Date(timeslot.date);
-                        const timeObj = new Date(timeslot.startTime);
-
-                        const formattedDate = format(dateObj, "dd.MM.yyyy", { locale: de });
-                        const formattedTime = format(timeObj, "HH:mm", { locale: de });
-
-                        await sendEmail({
-                            to: user.email,
-                            subject: "Dein WSP Training ist bestätigt! 🚀",
-                            html: EmailTemplates.bookingConfirmation(user.firstName, formattedDate, formattedTime)
+                    if (!isCoveredBySubscription) {
+                        // Deduct Credit
+                        if (profile.credits < 1) throw new Error("INSUFFICIENT_CREDITS");
+                        await tx.profile.update({
+                            where: { id: userId },
+                            data: { credits: { decrement: 1 } }
                         });
                     }
-                } catch (emailError) {
-                    console.error("Failed to send booking confirmation email:", emailError);
+                }
+
+                // Create Booking
+                const booking = await tx.booking.create({
+                    data: {
+                        userId,
+                        timeslotId,
+                        status: "CONFIRMED",
+                        notes,
+                        care_level_snapshot: careLevel
+                    },
+                    include: {
+                        user: true,
+                        timeslot: true
+                    }
+                });
+
+                return booking;
+            });
+
+            // Post-Transaction: Send Email
+            if (result.user.email && result.user.emailNotifications) {
+                try {
+                    const dateObj = result.timeslot.date;
+                    const timeObj = result.timeslot.startTime;
+                    const formattedDate = format(dateObj, "dd.MM.yyyy", { locale: de });
+                    const formattedTime = format(timeObj, "HH:mm", { locale: de });
+
+                    await sendEmail({
+                        to: result.user.email,
+                        subject: "Training bestätigt! ✅",
+                        html: EmailTemplates.bookingConfirmation(result.user.firstName || "Kunde", formattedDate, formattedTime),
+                        from: EMAIL_SENDER_SUPPORT
+                    });
+                } catch (e) {
+                    console.error("Failed to send email", e);
                 }
             }
 
-            return { success: true, bookingId: booking.id };
+            return { success: true, bookingId: result.id };
 
         } catch (error: any) {
-            console.error("Booking transaction failed:", error);
+            console.error("Booking Transaction Failed:", error);
+            if (error.message === "GLOBAL_CAPACITY_FULL") {
+                return { success: false, reason: "Slot became full during booking", code: "GLOBAL_CAPACITY_FULL" };
+            }
+            if (error.message === "INSUFFICIENT_CREDITS") {
+                return { success: false, reason: "Kein Guthaben und kein aktives Abo", code: "INSUFFICIENT_CREDITS" };
+            }
             return { success: false, reason: "Internal System Error", code: "SYSTEM_ERROR" };
         }
     }

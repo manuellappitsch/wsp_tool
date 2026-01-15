@@ -71,27 +71,27 @@ export async function updateCourseVisibility(id: string, publishedForAdmin: bool
 }
 
 export async function getCourses() {
-    const { data: courses, error } = await supabaseAdmin
-        .from("courses")
-        .select(`
-            *,
-            contents (*)
-        `)
-        .order("sortOrder", { ascending: true });
+    try {
+        const { db } = await import("@/lib/db");
 
-    if (error) {
-        console.error("Fetch Courses Error:", error);
+        const courses = await db.course.findMany({
+            include: {
+                contents: {
+                    orderBy: {
+                        sortOrder: 'asc'
+                    }
+                }
+            },
+            orderBy: {
+                sortOrder: 'asc'
+            }
+        });
+
+        return courses;
+    } catch (error: any) {
+        console.error("Fetch Courses Error:", error?.message);
         return [];
     }
-
-    // Sort contents by sortOrder within each course
-    courses.forEach((course: any) => {
-        if (course.contents) {
-            course.contents.sort((a: any, b: any) => a.sortOrder - b.sortOrder);
-        }
-    });
-
-    return courses;
 }
 
 // --- VIDEO ACTIONS ---

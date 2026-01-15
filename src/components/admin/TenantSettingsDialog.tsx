@@ -8,61 +8,64 @@ import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Loader2, Settings, Trash2 } from "lucide-react";
 import { toast } from "sonner";
-import { updateTenant, deleteUser, archiveTenant, createTenantUser, updateTenantUser, resetTenantUserPassword, resetTenantAdminPassword } from "@/actions/tenant";
+import { updateTenant, deleteUser, archiveTenant, createTenantUser, updateTenantUser, resetTenantUserPassword, deleteTenant } from "@/actions/tenant";
 import { Badge } from "@/components/ui/badge";
 import { Archive, RotateCcw, Plus, Pencil, X, Save, Key, Copy, Check } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
 
-// Define simplified type for what we get from Prisma
+// Define simplified type compatible with Prisma Output
+interface TenantProfile {
+    id: string;
+    firstName: string | null;
+    lastName: string | null;
+    email: string;
+    role: string;
+    isActive: boolean;
+    initialPassword?: string | null; // Optional from return types
+}
+
 interface TenantWithUsers {
     id: string;
     companyName: string;
     logoUrl: string | null;
     isActive: boolean;
     dailyKontingent: number;
+    quotaType?: string | null; // "NORMAL" | "SPECIAL"
     billingAddress?: string | null;
     billingZip?: string | null;
     billingCity?: string | null;
     billingEmail?: string | null;
-    users: any[];
-    admins?: any[];
+    users: TenantProfile[]; // Now contains ALL profiles (Admins and Users)
 }
 
 interface Props {
-    tenant: TenantWithUsers;
+    tenant: any; // Using any to avoid strict Prisma type mismatch
 }
 
 export function TenantSettingsDialog({ tenant }: Props) {
-    // ... existing hooks
     const [open, setOpen] = useState(false);
     const [isPending, startTransition] = useTransition();
 
-    // ... existing handlers (handleUpdate, etc.) -> No changes needed there, assuming they work generically with formData
+    // Separate Admins and Employees
+    // In our new schema, users (Employees) have role USER, admins have TENANT_ADMIN
+    const admin = tenant.users.find((u: any) => u.role === 'TENANT_ADMIN');
+    // Show ALL tenant users (Admin + Employees) in the list to avoid confusion with the count
+    const allUsers = tenant.users.filter((u: any) => u.role === 'USER' || u.role === 'TENANT_ADMIN');
 
     const handleUpdate = async (formData: FormData) => {
-
         const logoFile = formData.get("logo");
-
-
         startTransition(async () => {
             try {
-                // Add ID to form data
                 formData.append("tenantId", tenant.id);
-
-
                 const result = await updateTenant(formData);
 
-
                 if (result.error) {
-
                     toast.error(result.error);
                 } else {
-
                     toast.success("Einstellungen gespeichert!");
                     setOpen(false);
                 }
             } catch (err: any) {
-
                 toast.error("Ein unerwarteter Client-Fehler ist aufgetreten: " + (err.message || String(err)));
             }
         });
@@ -71,23 +74,17 @@ export function TenantSettingsDialog({ tenant }: Props) {
     const [userMode, setUserMode] = useState<"list" | "create" | "edit">("list");
     const [editingUser, setEditingUser] = useState<any | null>(null);
     const [successData, setSuccessData] = useState<{ password: string, email: string } | null>(null);
+    const [adminPassword, setAdminPassword] = useState<string | null>(null);
     const [copied, setCopied] = useState(false);
 
-    // ... Helper functions
     const handleCreateUser = async (formData: FormData) => {
-        // ... existing implementation
-
         startTransition(async () => {
-
             formData.append("tenantId", tenant.id);
             const email = formData.get("email") as string;
-
 
             try {
                 // @ts-ignore
                 const result = await createTenantUser(formData);
-
-
                 if (result.error) {
                     toast.error(result.error);
                 } else {
@@ -98,13 +95,11 @@ export function TenantSettingsDialog({ tenant }: Props) {
                     setUserMode("list");
                 }
             } catch (e) {
-
                 toast.error("Ein unerwarteter Fehler ist aufgetreten.");
             }
         });
     };
 
-    // ... keep existing handlers (handleResetPassword, handleCopyPassword, handleUpdateUser, handleDeleteUser, handleArchive)
     const handleResetPassword = async () => {
         if (!editingUser) return;
         if (!confirm("Passwort wirklich zurücksetzen? Der Mitarbeiter erhält eine E-Mail.")) return;
@@ -134,9 +129,8 @@ export function TenantSettingsDialog({ tenant }: Props) {
     const handleUpdateUser = async (formData: FormData) => {
         startTransition(async () => {
             formData.append("userId", editingUser.id);
-            // Checkbox handling hack for FormData
             if (!formData.get("isActive")) {
-                formData.append("isActive", "false"); // if unchecked not sent
+                formData.append("isActive", "false");
             }
 
             const result = await updateTenantUser(formData);
@@ -163,6 +157,21 @@ export function TenantSettingsDialog({ tenant }: Props) {
         });
     };
 
+    const handleDelete = async () => {
+        if (!confirm("WARNUNG: Möchten Sie diesen Partner und ALLE zugehörigen Mitarbeiter/Daten UNWIDERRUFLICH löschen?")) return;
+
+        startTransition(async () => {
+            // @ts-ignore
+            const result = await deleteTenant(tenant.id);
+            if (result.error) {
+                toast.error(result.error);
+            } else {
+                toast.success("Partner endgültig gelöscht.");
+                setOpen(false);
+            }
+        });
+    };
+
     const handleArchive = async () => {
         const action = tenant.isActive ? "archivieren" : "reaktivieren";
         if (!confirm(`Möchten Sie diesen Partner wirklich ${action}?`)) return;
@@ -177,15 +186,13 @@ export function TenantSettingsDialog({ tenant }: Props) {
             }
         });
     };
-    const [adminPassword, setAdminPassword] = useState<string | null>(null);
 
     const handleResetAdminPassword = async () => {
-        if (!tenant.admins?.[0]) return;
+        if (!admin) return;
         if (!confirm("Admin-Passwort wirklich zurücksetzen? Der Admin erhält eine E-Mail.")) return;
 
         startTransition(async () => {
-            // @ts-ignore
-            const result = await resetTenantAdminPassword(tenant.admins[0].id);
+            const result = await resetTenantUserPassword(admin.id);
             if (result.error) {
                 toast.error(result.error);
             } else {
@@ -196,9 +203,6 @@ export function TenantSettingsDialog({ tenant }: Props) {
             }
         });
     };
-
-    // Get the first admin (CEO) if available
-    const admin = tenant.admins && tenant.admins.length > 0 ? tenant.admins[0] : null;
 
     return (
         <Dialog open={open} onOpenChange={setOpen}>
@@ -222,7 +226,7 @@ export function TenantSettingsDialog({ tenant }: Props) {
                 <Tabs defaultValue="master" className="w-full mt-4">
                     <TabsList className="grid w-full grid-cols-2">
                         <TabsTrigger value="master">Stammdaten & Kontingent</TabsTrigger>
-                        <TabsTrigger value="employees">Mitarbeiter ({tenant.users.length})</TabsTrigger>
+                        <TabsTrigger value="employees">Benutzer ({allUsers.length})</TabsTrigger>
                     </TabsList>
 
                     {/* STAMMDATEN */}
@@ -241,24 +245,15 @@ export function TenantSettingsDialog({ tenant }: Props) {
                                             <span className="font-medium text-slate-900">{admin.email}</span>
                                         </div>
                                         <div>
-                                            <span className="text-slate-500 block text-xs">Initial-Passwort</span>
-                                            <div className="flex items-center gap-2">
-                                                <code className="bg-white border rounded px-2 py-0.5 font-mono text-xs">
-                                                    {adminPassword || admin.initialPassword || "••••••••"}
-                                                </code>
-                                                {(adminPassword || admin.initialPassword) && (
-                                                    <Button
-                                                        type="button"
-                                                        variant="ghost"
-                                                        size="icon"
-                                                        className="h-6 w-6"
-                                                        onClick={() => {
-                                                            navigator.clipboard.writeText(adminPassword || admin.initialPassword);
-                                                            toast.success("Kopiert");
-                                                        }}
-                                                    >
-                                                        <Copy className="h-3 w-3" />
-                                                    </Button>
+                                            <div className="flex items-center justify-between">
+                                                <span className="text-slate-500 block text-xs">Passwort Reset</span>
+                                                {adminPassword && (
+                                                    <div className="flex items-center gap-2">
+                                                        <code className="bg-white border text-xs px-1 rounded">{adminPassword}</code>
+                                                        <Button type="button" size="icon" variant="ghost" className="h-5 w-5" onClick={() => { navigator.clipboard.writeText(adminPassword); toast.success("Kopiert") }}>
+                                                            <Copy className="h-3 w-3" />
+                                                        </Button>
+                                                    </div>
                                                 )}
                                                 <Button
                                                     type="button"
@@ -294,8 +289,21 @@ export function TenantSettingsDialog({ tenant }: Props) {
                                     <p className="text-[10px] text-gray-500">Upload neuer Datei ersetzt das bestehende Logo.</p>
                                 </div>
                                 <div className="space-y-2">
-                                    <Label>Tgl. Kontingent</Label>
+                                    <Label>Tgl. Kontingent (Global)</Label>
                                     <Input name="dailyKontingent" type="number" defaultValue={tenant.dailyKontingent} required />
+                                </div>
+                                <div className="space-y-2">
+                                    <Label>Vertragstyp</Label>
+                                    <div className="relative">
+                                        <select
+                                            name="quotaType"
+                                            defaultValue={tenant.quotaType || "NORMAL"}
+                                            className="flex h-10 w-full items-center justify-between rounded-md border border-input bg-background px-3 py-2 text-sm"
+                                        >
+                                            <option value="NORMAL">Normal (4x / Monat)</option>
+                                            <option value="SPECIAL">Special (1x / Tag)</option>
+                                        </select>
+                                    </div>
                                 </div>
                             </div>
 
@@ -321,25 +329,38 @@ export function TenantSettingsDialog({ tenant }: Props) {
                                 </div>
                             </div>
 
-                            <DialogFooter className="flex justify-between items-center sm:justify-between w-full">
-                                <Button
-                                    type="button"
-                                    variant="ghost"
-                                    className={`${tenant.isActive ? 'text-red-600 hover:text-red-700 hover:bg-red-50' : 'text-green-600 hover:text-green-700 hover:bg-green-50'}`}
-                                    onClick={handleArchive}
-                                >
-                                    {tenant.isActive ? (
-                                        <>
-                                            <Archive className="mr-2 h-4 w-4" />
-                                            Archivieren (Kündigung)
-                                        </>
-                                    ) : (
-                                        <>
-                                            <RotateCcw className="mr-2 h-4 w-4" />
-                                            Reaktivieren
-                                        </>
+                            <DialogFooter className="flex justify-between items-center sm:justify-between w-full gap-2">
+                                <div className="flex gap-2">
+                                    {!tenant.isActive && (
+                                        <Button
+                                            type="button"
+                                            variant="destructive"
+                                            size="sm"
+                                            onClick={handleDelete}
+                                        >
+                                            <Trash2 className="mr-2 h-4 w-4" />
+                                            Löschen
+                                        </Button>
                                     )}
-                                </Button>
+                                    <Button
+                                        type="button"
+                                        variant="ghost"
+                                        className={`${tenant.isActive ? 'text-red-600 hover:text-red-700 hover:bg-red-50' : 'text-green-600 hover:text-green-700 hover:bg-green-50'}`}
+                                        onClick={handleArchive}
+                                    >
+                                        {tenant.isActive ? (
+                                            <>
+                                                <Archive className="mr-2 h-4 w-4" />
+                                                Archivieren (Kündigung)
+                                            </>
+                                        ) : (
+                                            <>
+                                                <RotateCcw className="mr-2 h-4 w-4" />
+                                                Reaktivieren
+                                            </>
+                                        )}
+                                    </Button>
+                                </div>
                                 <div className="flex gap-2">
                                     <Button type="button" variant="outline" onClick={() => setOpen(false)}>Abbrechen</Button>
                                     <Button type="submit" className="bg-[#163B40]" disabled={isPending}>
@@ -355,9 +376,9 @@ export function TenantSettingsDialog({ tenant }: Props) {
                         <div className="py-4 space-y-4">
                             <div className="flex justify-between items-center">
                                 <h3 className="font-medium">
-                                    {userMode === "list" && "Mitarbeiter Liste"}
+                                    {userMode === "list" && "Benutzer Liste"}
                                     {userMode === "create" && "Neuer Mitarbeiter"}
-                                    {userMode === "edit" && "Mitarbeiter bearbeiten"}
+                                    {userMode === "edit" && "Benutzer bearbeiten"}
                                 </h3>
                                 {userMode === "list" && (
                                     <Button size="sm" onClick={() => setUserMode("create")} className="gap-2 bg-[#163B40]">
@@ -395,21 +416,21 @@ export function TenantSettingsDialog({ tenant }: Props) {
                                     <Button onClick={() => setSuccessData(null)} className="bg-green-700 hover:bg-green-800 text-white w-full max-w-xs">
                                         Schließen
                                     </Button>
-                                    <p className="text-xs text-green-700 opacity-75">
-                                        Dieses Fenster schließt automatisch beim Verlassen.
-                                    </p>
                                 </div>
                             ) : (
                                 <>
                                     {userMode === "list" ? (
                                         <div className="border rounded-md divide-y max-h-[300px] overflow-y-auto">
-                                            {tenant.users.length === 0 ? (
-                                                <div className="p-4 text-center text-sm text-gray-500">Keine Mitarbeiter gefunden.</div>
+                                            {allUsers.length === 0 ? (
+                                                <div className="p-4 text-center text-sm text-gray-500">Keine Benutzer gefunden.</div>
                                             ) : (
-                                                tenant.users.map((user) => (
+                                                allUsers.map((user: any) => (
                                                     <div key={user.id} className="p-3 flex items-center justify-between hover:bg-gray-50">
                                                         <div>
-                                                            <p className="font-medium text-sm">{user.firstName} {user.lastName}</p>
+                                                            <div className="flex items-center gap-2">
+                                                                <p className="font-medium text-sm">{user.firstName} {user.lastName}</p>
+                                                                {user.role === 'TENANT_ADMIN' && <Badge variant="outline" className="text-[10px] border-blue-200 text-blue-700 bg-blue-50">Admin</Badge>}
+                                                            </div>
                                                             <p className="text-xs text-gray-500">{user.email}</p>
                                                         </div>
                                                         <div className="flex items-center gap-2">
@@ -427,15 +448,17 @@ export function TenantSettingsDialog({ tenant }: Props) {
                                                             >
                                                                 <Pencil className="h-4 w-4" />
                                                             </Button>
-                                                            <Button
-                                                                size="icon"
-                                                                variant="ghost"
-                                                                className="h-8 w-8 text-red-500 hover:text-red-700 hover:bg-red-50"
-                                                                disabled={isPending}
-                                                                onClick={() => handleDeleteUser(user.id)}
-                                                            >
-                                                                <Trash2 className="h-4 w-4" />
-                                                            </Button>
+                                                            {user.role !== 'TENANT_ADMIN' && (
+                                                                <Button
+                                                                    size="icon"
+                                                                    variant="ghost"
+                                                                    className="h-8 w-8 text-red-500 hover:text-red-700 hover:bg-red-50"
+                                                                    disabled={isPending}
+                                                                    onClick={() => handleDeleteUser(user.id)}
+                                                                >
+                                                                    <Trash2 className="h-4 w-4" />
+                                                                </Button>
+                                                            )}
                                                         </div>
                                                     </div>
                                                 ))
@@ -468,30 +491,6 @@ export function TenantSettingsDialog({ tenant }: Props) {
                                                     <div className="border-t pt-2 space-y-3">
                                                         <h4 className="text-xs font-semibold uppercase text-gray-400">Sicherheit</h4>
 
-                                                        {editingUser?.initialPassword && (
-                                                            <div className="bg-yellow-50 border border-yellow-200 rounded p-3 text-sm">
-                                                                <p className="text-yellow-800 text-xs mb-1 font-semibold">Initial-Passwort:</p>
-                                                                <div className="flex items-center justify-between">
-                                                                    <code className="text-gray-800 font-mono tracking-wide">{editingUser.initialPassword}</code>
-                                                                    <Button
-                                                                        type="button"
-                                                                        variant="ghost"
-                                                                        size="icon"
-                                                                        className="h-6 w-6"
-                                                                        onClick={() => {
-                                                                            navigator.clipboard.writeText(editingUser.initialPassword);
-                                                                            toast.success("Passwort kopiert");
-                                                                        }}
-                                                                    >
-                                                                        <Copy className="h-3 w-3" />
-                                                                    </Button>
-                                                                </div>
-                                                                <p className="text-[10px] text-yellow-700 mt-1">
-                                                                    Dies ist das zuletzt generierte Passwort. Wenn der Nutzer es geändert hat, stimmt dies nicht mehr.
-                                                                </p>
-                                                            </div>
-                                                        )}
-
                                                         <div>
                                                             <Button type="button" variant="outline" size="sm" onClick={handleResetPassword} className="w-full justify-start text-red-600 hover:text-red-700 hover:bg-red-50">
                                                                 <Key className="mr-2 h-4 w-4" />
@@ -514,11 +513,6 @@ export function TenantSettingsDialog({ tenant }: Props) {
                                         </form>
                                     )}
                                 </>
-                            )}
-                            {userMode === "list" && !successData && (
-                                <p className="text-xs text-gray-500">
-                                    Hinweis: Neue Mitarbeiter erhalten automatisch eine E-Mail mit ihren Zugangsdaten.
-                                </p>
                             )}
                         </div>
                     </TabsContent>

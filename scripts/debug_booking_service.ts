@@ -9,8 +9,8 @@ async function main() {
     const timeslotId = slots?.[0]?.id;
     console.log("Testing with Timeslot ID:", timeslotId);
 
-    // 2. Get a Customer
-    const { data: customers } = await supabaseAdmin.from("b2c_customers").select("id").limit(1);
+    // 2. Get a Customer (Profile)
+    const { data: customers } = await supabaseAdmin.from("profiles").select("id").eq('role', 'B2C_CUSTOMER').limit(1);
     const customerId = customers?.[0]?.id;
     console.log("Testing with Customer ID:", customerId);
 
@@ -22,7 +22,7 @@ async function main() {
     // 3. Test Booking Service CREATION
     console.log("Calling BookingService.createBooking...");
     const result = await BookingService.createBooking(
-        { b2cCustomerId: customerId },
+        { userId: customerId },
         timeslotId,
         "DEBUG BOOKING"
     );

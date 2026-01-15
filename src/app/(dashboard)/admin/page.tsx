@@ -61,15 +61,16 @@ export default async function AdminDashboardPage() {
                 timeslot: {
                     date: { gte: start, lte: end }
                 },
-                b2cCustomer: {
-                    credits: { lte: 2 }
+                user: {
+                    credits: { lte: 2 },
+                    role: 'B2C_CUSTOMER'
                 }
             },
             include: {
-                b2cCustomer: true,
+                user: true,
                 timeslot: true
             },
-            take: 5 // Limit list size
+            take: 5
         })
     ]);
 
@@ -141,11 +142,11 @@ export default async function AdminDashboardPage() {
                                         <div key={booking.id} className="p-4 flex items-center justify-between hover:bg-red-50/10 transition-colors">
                                             <div className="flex items-center gap-3">
                                                 <div className="h-10 w-10 rounded-full bg-red-100 flex items-center justify-center text-red-700 font-bold text-xs ring-2 ring-white">
-                                                    {booking.b2cCustomer?.credits}
+                                                    {booking.user?.credits}
                                                 </div>
                                                 <div>
                                                     <p className="text-sm font-bold text-gray-900">
-                                                        {booking.b2cCustomer?.firstName} {booking.b2cCustomer?.lastName}
+                                                        {booking.user?.firstName} {booking.user?.lastName}
                                                     </p>
                                                     <p className="text-xs text-gray-500 flex items-center gap-1">
                                                         <Activity className="h-3 w-3" />
@@ -170,4 +171,3 @@ export default async function AdminDashboardPage() {
         </div>
     );
 }
-

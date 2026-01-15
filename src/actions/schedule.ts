@@ -4,6 +4,7 @@ import { db } from "@/lib/db";
 import { revalidatePath } from "next/cache";
 import { addDays, addMinutes, format, getDay, isBefore, startOfDay } from "date-fns";
 import { toZonedTime, fromZonedTime } from "date-fns-tz";
+import { TimeslotType } from "@prisma/client";
 
 // Types for the UI
 export interface DaySchedule {
@@ -74,7 +75,10 @@ export async function saveOpeningHours(schedule: DaySchedule[]) {
 
 // ... helper to extract HH:mm from ISO string (ignoring T/Z, treating as face value)
 function extractTime(iso: Date): string {
-    return iso.toISOString().substr(11, 5);
+    // Safer extraction using UTC methods to ensure face value is preserved
+    const h = iso.getUTCHours().toString().padStart(2, '0');
+    const m = iso.getUTCMinutes().toString().padStart(2, '0');
+    return `${h}:${m}`;
 }
 
 export async function getOpeningHours() {
@@ -97,9 +101,14 @@ export async function getOpeningHours() {
 }
 
 export async function generateTimeslotsForMonth() {
+    const debugLogs: string[] = [];
     try {
-        const today = startOfDay(new Date());
-        const daysToGenerate = 30; // Generate next 30 days
+        // Enforce Face Value UTC Date for 'today'
+        const now = new Date();
+        // Start from beginning of the current month to ensure past days in current view are present
+        const today = new Date(Date.UTC(now.getFullYear(), now.getMonth(), 1));
+
+        const daysToGenerate = 60; // Generate next 60 days (covers current month + next month)
         const openingHours = await db.openingHours.findMany({ include: { breaks: true } });
 
         const getRules = (date: Date) => {
@@ -111,58 +120,112 @@ export async function generateTimeslotsForMonth() {
         await db.$transaction(async (tx) => {
             // Increase timeout if possible, but optimizing code is better.
 
+            // Use 'any' cast to bypass potential type mismatch if client isn't fully regenerated
+            const analysisSchedules = await (tx as any).analysisSchedule.findMany({ where: { isActive: true } });
+            debugLogs.push(`Found ${analysisSchedules.length} active analysis schedules.`);
+
             for (let i = 0; i < daysToGenerate; i++) {
                 const dayDate = addDays(today, i);
+                const dayOfWeek = getDay(dayDate); // 0=Sun, 1=Mon
                 const rules = getRules(dayDate);
 
-                if (!rules || rules.isClosed) continue;
+                if ((!rules || rules.isClosed) && !analysisSchedules.some((s: any) => s.dayOfWeek === dayOfWeek)) continue;
 
-                // 1. Get Face Value Times (e.g. "08:00")
-                const openStr = extractTime(rules.openTime);
-                const closeStr = extractTime(rules.closeTime);
+                // 1. Determine Boundaries (Min Start, Max End)
+                let earliestStartStr = "23:59";
+                let latestEndStr = "00:00";
 
-                // 2. Convert to Concrete UTC Start/End
-                const dayStr = format(dayDate, "yyyy-MM-dd");
-                const dayStartUTC = fromZonedTime(`${dayStr} ${openStr}`, TIME_ZONE);
-                const dayEndUTC = fromZonedTime(`${dayStr} ${closeStr}`, TIME_ZONE);
+                // Check Regular Hours
+                if (rules && !rules.isClosed) {
+                    earliestStartStr = extractTime(rules.openTime);
+                    latestEndStr = extractTime(rules.closeTime);
+                }
+
+                // Check Analysis Hours (Expand boundaries)
+                const dayAnalysis = analysisSchedules.filter((s: any) => s.dayOfWeek === dayOfWeek);
+                for (const sched of dayAnalysis) {
+                    const start = extractTime(sched.startTime);
+                    const end = extractTime(sched.endTime);
+                    if (start < earliestStartStr) earliestStartStr = start;
+                    if (end > latestEndStr) latestEndStr = end;
+                }
+
+                // If effectively no valid time, skip
+                if (earliestStartStr >= latestEndStr) continue;
+
+                // 2. Convert to Concrete UTC Start/End (FACE VALUE)
+                const [openH, openM] = earliestStartStr.split(':').map(Number);
+                const [closeH, closeM] = latestEndStr.split(':').map(Number);
+
+                const dayStartUTC = new Date(Date.UTC(dayDate.getFullYear(), dayDate.getMonth(), dayDate.getDate(), openH, openM));
+                const dayEndUTC = new Date(Date.UTC(dayDate.getFullYear(), dayDate.getMonth(), dayDate.getDate(), closeH, closeM));
 
                 let currentSlot = dayStartUTC;
                 const slotsToCreate = [];
 
                 // Delete existing slots for this day to clean up dirty data
-                // This is safe because we regenerate immediately.
-                // NOTE: This will delete bookings if cascading! 
-                // But current state is broken, so we must fix slots. 
-                // We assume this is acceptable dev action or no bookings exist for future range or bookings are linked via other means?
-                // Actually, if a booking refers to timeslotId, deleting timeslot deletes booking.
-                // WE MUST BE CAREFUL. 
-                // Optimally: Find existing slots, check times.
-                // But bulk delete/create is the only way to fix the "Millisecond Pollution".
                 await tx.timeslot.deleteMany({
-                    where: { date: dayDate }
+                    where: {
+                        date: dayDate,
+                        bookings: { none: {} } // Only delete slots with no bookings
+                    }
                 });
 
                 // Loop
                 while (isBefore(currentSlot, dayEndUTC)) {
-                    const slotEnd = addMinutes(currentSlot, 30);
+                    const slotEnd = addMinutes(currentSlot, 10); // 10 Minute Intervals
+                    const slotStartStr = extractTime(currentSlot);
 
-                    // Check Breaks (Time overlap check)
-                    const slotBerlin = toZonedTime(currentSlot, TIME_ZONE);
-                    const slotStartStr = format(slotBerlin, "HH:mm");
+                    // --- Determine Valid Slot Types ---
 
-                    const isBlockedByBreak = rules.breaks.some(brk => {
-                        const brkStart = extractTime(brk.startTime);
-                        const brkEnd = extractTime(brk.endTime);
-                        return (slotStartStr >= brkStart && slotStartStr < brkEnd);
+                    // 1. Is Analysis? (Always allowed if matches analysis schedule)
+                    let isAnalysis = false;
+                    const matchingAnalysis = dayAnalysis.find((sched: any) => {
+                        const s = extractTime(sched.startTime);
+                        const e = extractTime(sched.endTime);
+                        return slotStartStr >= s && slotStartStr < e;
                     });
+                    if (matchingAnalysis) isAnalysis = true;
 
-                    if (!isBlockedByBreak) {
-                        slotsToCreate.push({
+                    // 2. Is Normal? (Allowed ONLY if Open, Inside Regular Hours, AND Not Break)
+                    let isNormal = false;
+                    if (rules && !rules.isClosed) {
+                        const regularOpen = extractTime(rules.openTime);
+                        const regularClose = extractTime(rules.closeTime);
+                        const inRegularHours = (slotStartStr >= regularOpen && slotStartStr < regularClose);
+
+                        const isBreak = rules.breaks.some(brk => {
+                            const bs = extractTime(brk.startTime);
+                            const be = extractTime(brk.endTime);
+                            return slotStartStr >= bs && slotStartStr < be;
+                        });
+
+                        if (inRegularHours && !isBreak) {
+                            isNormal = true;
+                        }
+                    }
+
+                    // --- Decision ---
+                    let slotType: TimeslotType | null = null;
+
+                    if (isAnalysis) {
+                        // Analysis takes priority (or it's the only valid thing)
+                        slotType = "ANALYSIS" as TimeslotType;
+                        if (slotStartStr === "13:00") console.log(`[MATCH] Analysis Override at ${slotStartStr}`);
+                    } else if (isNormal) {
+                        slotType = "NORMAL" as TimeslotType;
+                    }
+
+                    if (slotType) {
+                        const payload = {
                             date: dayDate,
                             startTime: currentSlot,
                             endTime: slotEnd,
-                            globalCapacity: 10
-                        });
+                            globalCapacity: slotType === "ANALYSIS" ? 1 : 6,
+                            type: slotType
+                        };
+
+                        slotsToCreate.push(payload);
                     }
 
                     currentSlot = slotEnd;
@@ -171,7 +234,7 @@ export async function generateTimeslotsForMonth() {
                 if (slotsToCreate.length > 0) {
                     await tx.timeslot.createMany({
                         data: slotsToCreate,
-                        skipDuplicates: true // Just in case
+                        skipDuplicates: true
                     });
                     createdCount += slotsToCreate.length;
                 }
@@ -181,10 +244,10 @@ export async function generateTimeslotsForMonth() {
             timeout: 20000
         });
 
-        return { success: true, count: createdCount };
+        return { success: true, count: createdCount, debugLogs };
 
-    } catch (error) {
+    } catch (error: any) {
         console.error("Generate Slots Error:", error);
-        return { error: "Fehler bei der Generierung." };
+        return { error: "Fehler bei der Generierung.", details: error.message, debugLogs };
     }
 }

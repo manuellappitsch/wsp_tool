@@ -17,8 +17,12 @@ export default async function DashboardLayout({
     }
 
     // Fetch Tenant Details if user belongs to one
-    let tenantName = "Partner";
+    let tenantName: string | undefined = undefined;
     let tenantLogoUrl = undefined;
+
+    if (session.user.role !== "B2C_CUSTOMER") {
+        tenantName = "Partner"; // Default for B2B/Admins
+    }
 
     if (session.user.tenantId) {
         const tenant = await db.tenant.findUnique({
@@ -31,10 +35,17 @@ export default async function DashboardLayout({
         }
     }
 
+    // Fetch Unread Notifications for Global Admin
+    let unreadCount = 0;
+    if (session.user.role === "GLOBAL_ADMIN") {
+        const { getUnreadNotificationCount } = await import("@/actions/notifications");
+        unreadCount = await getUnreadNotificationCount();
+    }
+
     return (
         <div className="flex h-screen bg-[#F3F4F6]">
             {/* Sidebar (Desktop) */}
-            <Sidebar userRole={session.user.role} className="hidden md:flex" />
+            <Sidebar userRole={session.user.role} className="hidden md:flex" unreadNotifications={unreadCount} />
 
             {/* Main Content Area */}
             <div className="flex-1 flex flex-col overflow-hidden">

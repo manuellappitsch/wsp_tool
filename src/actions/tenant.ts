@@ -1,54 +1,11 @@
 "use server";
 
-import { supabaseAdmin } from "@/lib/supabase-admin";
 import { db } from "@/lib/db";
 import { revalidatePath } from "next/cache";
-import bcrypt from "bcryptjs";
 import { EmailTemplates } from "@/lib/email-templates";
-import { sendEmail } from "@/lib/resend";
-
-async function uploadLogo(file: File, tenantName: string): Promise<{ url: string | null, error?: string }> {
-
-    if (!file || file.size === 0) {
-
-        return { url: null };
-    }
-
-    try {
-        const fileExt = file.name.split('.').pop();
-        // Sanitize file name
-        const fileName = `${tenantName.replace(/[^a-z0-9]/gi, '_').toLowerCase()}_${Date.now()}.${fileExt}`;
-        const filePath = `${fileName}`;
-
-
-
-        const { data, error: uploadError } = await supabaseAdmin
-            .storage
-            .from('logos')
-            .upload(filePath, file, {
-                contentType: file.type,
-                upsert: true
-            });
-
-        if (uploadError) {
-            console.error("SERVER: Supabase Upload Error:", uploadError);
-            return { url: null, error: `Upload Fehler: ${uploadError.message}` };
-        }
-
-
-
-        const { data: { publicUrl } } = supabaseAdmin
-            .storage
-            .from('logos')
-            .getPublicUrl(filePath);
-
-
-        return { url: publicUrl };
-    } catch (e: any) {
-        console.error("SERVER: Logo Upload Exception:", e);
-        return { url: null, error: `Upload Exception: ${e.message}` };
-    }
-}
+import { sendEmail, EMAIL_SENDER_SUPPORT } from "@/lib/resend";
+import { uploadLogoInternal, createTenantCore } from "@/lib/tenant-service";
+import { supabaseAdmin } from "@/lib/supabase-admin";
 
 function generatePassword(length = 12) {
     const chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%";
@@ -68,8 +25,6 @@ export async function createTenant(formData: FormData) {
     // Logo
     const logoFile = formData.get("logo") as File | null;
 
-
-
     // CEO / Admin Name
     const firstName = (formData.get("firstName") as string) || "Geschäftsführer";
     const lastName = (formData.get("lastName") as string) || "";
@@ -80,71 +35,24 @@ export async function createTenant(formData: FormData) {
     const billingCity = formData.get("billingCity") as string | null;
     const billingEmail = formData.get("billingEmail") as string | null;
 
-    if (!companyName || !email) {
-        return { error: "Firmenname und E-Mail sind erforderlich." };
-    }
+    const result = await createTenantCore({
+        companyName,
+        email,
+        firstName,
+        lastName,
+        dailyKontingent,
+        billingAddress,
+        billingZip,
+        billingCity,
+        billingEmail,
+        logoFile
+    });
 
-    try {
-        // 1. Check if email exists
-        const existingAdmin = await db.tenantAdmin.findUnique({ where: { email } });
-        if (existingAdmin) return { error: "Diese E-Mail wird bereits verwendet." };
-
-        // 2. Upload Logo if present
-        let logoUrl: string | null = null;
-        if (logoFile && logoFile.size > 0) {
-
-            const uploadResult = await uploadLogo(logoFile, companyName);
-            if (uploadResult.error) {
-                return { error: uploadResult.error }; // Return error immediately
-            }
-            logoUrl = uploadResult.url;
-
-        } else {
-
-        }
-
-        // 3. Hash random password
-        const plainPassword = generatePassword();
-        const passwordHash = await bcrypt.hash(plainPassword, 10);
-
-        // 4. Transaction: Create Tenant + Admin
-        await db.$transaction(async (tx) => {
-            const tenant = await tx.tenant.create({
-                data: {
-                    companyName,
-                    logoUrl,
-                    dailyKontingent,
-                    billingAddress,
-                    billingZip,
-                    billingCity,
-                    billingEmail,
-                    admins: {
-                        create: {
-                            email,
-                            firstName,
-                            lastName,
-                            passwordHash,
-                            initialPassword: plainPassword,
-                            inviteStatus: "ACCEPTED" // Direct creation via Admin
-                        }
-                    }
-                }
-            });
-        });
-
-        // 5. Send Email
-        const emailHtml = EmailTemplates.partnerWelcome(companyName, `${firstName} ${lastName}`, email, plainPassword);
-        await sendEmail({
-            to: email,
-            subject: "Willkommen als Partner beim WSP!",
-            html: emailHtml
-        });
-
+    if (result.success) {
         revalidatePath("/admin/tenants");
-        return { success: true, password: plainPassword };
-    } catch (error) {
-        console.error("Create Tenant Error:", error);
-        return { error: "Fehler beim Erstellen des Partners." };
+        return result;
+    } else {
+        return { error: result.error };
     }
 }
 
@@ -156,7 +64,6 @@ export async function updateTenant(formData: FormData) {
     // Logo
     const logoFile = formData.get("logo") as File | null;
 
-
     // Billing
     const billingAddress = formData.get("billingAddress") as string | null;
     const billingZip = formData.get("billingZip") as string | null;
@@ -167,7 +74,7 @@ export async function updateTenant(formData: FormData) {
         let logoUrl: string | undefined = undefined;
         if (logoFile && logoFile.size > 0) {
 
-            const uploadResult = await uploadLogo(logoFile, companyName);
+            const uploadResult = await uploadLogoInternal(logoFile, companyName);
             if (uploadResult.error) {
                 console.error("SERVER: Logo upload failed", uploadResult.error);
                 return { error: uploadResult.error }; // Return specific error to UI
@@ -183,6 +90,7 @@ export async function updateTenant(formData: FormData) {
             data: {
                 companyName,
                 dailyKontingent,
+                quotaType: formData.get("quotaType") as "NORMAL" | "SPECIAL" || "NORMAL",
                 billingAddress,
                 billingZip,
                 billingCity,
@@ -200,7 +108,19 @@ export async function updateTenant(formData: FormData) {
 
 export async function deleteUser(userId: string) {
     try {
-        await db.user.delete({ where: { id: userId } });
+        // Delete from Supabase Auth
+        const { error } = await supabaseAdmin.auth.admin.deleteUser(userId);
+        if (error) {
+            console.error("Supabase Delete Error:", error);
+        }
+
+        // Clean up Profile
+        try {
+            await db.profile.delete({ where: { id: userId } });
+        } catch (e) {
+            // Ignore if already deleted
+        }
+
         revalidatePath("/admin/tenants");
         return { success: true };
     } catch (error) {
@@ -230,32 +150,41 @@ export async function createTenantUser(formData: FormData) {
     const lastName = formData.get("lastName") as string;
     const email = formData.get("email") as string;
 
-
-
     if (!tenantId || !firstName || !lastName || !email) {
         return { error: "Alle Felder sind erforderlich." };
     }
 
     try {
-        // Check email
-        const existing = await db.user.findUnique({ where: { email } });
+        // Check email in Profile
+        const existing = await db.profile.findUnique({ where: { email } });
         if (existing) return { error: "E-Mail bereits verwendet." };
-
 
         // Generate random password
         const plainPassword = generatePassword();
-        const passwordHash = await bcrypt.hash(plainPassword, 10);
 
-        await db.user.create({
+        // Create in Supabase Auth
+        const { data: authUser, error: authError } = await supabaseAdmin.auth.admin.createUser({
+            email: email,
+            password: plainPassword,
+            email_confirm: true,
+            user_metadata: { firstName, lastName }
+        });
+
+        if (authError || !authUser.user) {
+            return { error: `Auth Error: ${authError?.message}` };
+        }
+
+        // Create Profile in DB using Auth ID
+        await db.profile.create({
             data: {
+                id: authUser.user.id,
                 tenantId,
                 firstName,
                 lastName,
                 email,
-                passwordHash,
-                inviteStatus: "ACCEPTED", // Admin created, so active immediately
-                isActive: true,
-                initialPassword: plainPassword
+                role: "USER",
+                inviteStatus: "ACCEPTED",
+                isActive: true
             }
         });
 
@@ -264,7 +193,8 @@ export async function createTenantUser(formData: FormData) {
         await sendEmail({
             to: email,
             subject: "Willkommen im WSP Portal - Deine Zugangsdaten",
-            html: emailHtml
+            html: emailHtml,
+            from: EMAIL_SENDER_SUPPORT
         });
 
         revalidatePath("/admin/tenants");
@@ -288,7 +218,8 @@ export async function updateTenantUser(formData: FormData) {
     }
 
     try {
-        await db.user.update({
+        // Update Profile
+        await db.profile.update({
             where: { id: userId },
             data: {
                 firstName,
@@ -297,6 +228,12 @@ export async function updateTenantUser(formData: FormData) {
                 isActive
             }
         });
+
+        // Update Auth Email
+        const { error } = await supabaseAdmin.auth.admin.updateUserById(userId, { email });
+        if (error) {
+            console.error("Auth Email Update Error:", error);
+        }
 
         revalidatePath("/admin/tenants");
         return { success: true };
@@ -308,19 +245,18 @@ export async function updateTenantUser(formData: FormData) {
 
 export async function resetTenantUserPassword(userId: string) {
     try {
-        const user = await db.user.findUnique({ where: { id: userId } });
+        const user = await db.profile.findUnique({ where: { id: userId } });
         if (!user) return { error: "Mitarbeiter nicht gefunden." };
 
         const plainPassword = generatePassword();
-        const passwordHash = await bcrypt.hash(plainPassword, 10);
 
-        await db.user.update({
-            where: { id: userId },
-            data: {
-                passwordHash,
-                initialPassword: plainPassword
-            }
+        const { error } = await supabaseAdmin.auth.admin.updateUserById(userId, {
+            password: plainPassword
         });
+
+        if (error) {
+            return { error: "Fehler beim Setzen des Passworts im Auth System." };
+        }
 
         // Send Email
         const emailHtml = EmailTemplates.accountCredentials(`${user.firstName} ${user.lastName}`, user.email, plainPassword);
@@ -338,33 +274,31 @@ export async function resetTenantUserPassword(userId: string) {
 }
 
 export async function resetTenantAdminPassword(adminId: string) {
+    return resetTenantUserPassword(adminId);
+}
+
+export async function deleteTenant(tenantId: string) {
     try {
-        const admin = await db.tenantAdmin.findUnique({ where: { id: adminId } });
-        if (!admin) return { error: "Admin nicht gefunden." };
-
-        const plainPassword = generatePassword();
-        const passwordHash = await bcrypt.hash(plainPassword, 10);
-
-        await db.tenantAdmin.update({
-            where: { id: adminId },
-            data: {
-                passwordHash,
-                initialPassword: plainPassword
-            }
+        const tenant = await db.tenant.findUnique({
+            where: { id: tenantId },
+            include: { profiles: true }
         });
 
-        // Send Email
-        const emailHtml = EmailTemplates.accountCredentials(`${admin.firstName} ${admin.lastName}`, admin.email, plainPassword);
-        await sendEmail({
-            to: admin.email,
-            subject: "Neues Admin-Passwort für das WSP Portal",
-            html: emailHtml
-        });
+        if (!tenant) return { error: "Partner nicht gefunden." };
+
+        // 1. Delete all users
+        // We iterate and wait properly
+        for (const profile of tenant.profiles) {
+            await deleteUser(profile.id);
+        }
+
+        // 2. Delete Tenant
+        await db.tenant.delete({ where: { id: tenantId } });
 
         revalidatePath("/admin/tenants");
-        return { success: true, password: plainPassword };
+        return { success: true };
     } catch (error) {
-        console.error("Reset Admin Password Error:", error);
-        return { error: "Fehler beim Zurücksetzen des Admin-Passworts." };
+        console.error("Delete Tenant Error:", error);
+        return { error: "Fehler beim Löschen des Partners." };
     }
 }

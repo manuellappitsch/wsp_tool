@@ -8,7 +8,8 @@ import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { BookingDialog } from "./BookingDialog";
-import { CheckCircle } from "lucide-react";
+import { BookAnalysisDialog } from "./BookAnalysisDialog";
+import { CheckCircle, Activity } from "lucide-react";
 
 interface Booking {
     id: string;
@@ -28,12 +29,13 @@ interface Booking {
 
 interface Timeslot {
     id: string;
-    date: string;
+    date: string | Date;
     startTime: string; // "HH:MM:00"
     endTime: string;
     capacity_points: number;
     bookings: Booking[];
     currentLoad: number;
+    type?: "NORMAL" | "ANALYSIS";
 }
 
 interface Props {
@@ -45,10 +47,17 @@ export function AdminDailyView({ slots, currentDate }: Props) {
     const [selectedSlotId, setSelectedSlotId] = useState<string | null>(null);
     const [isDialogOpen, setIsDialogOpen] = useState(false);
 
+    // Analysis Dialog State
+    const [selectedAnalysisSlot, setSelectedAnalysisSlot] = useState<Timeslot | null>(null);
+    const [isAnalysisDialogOpen, setIsAnalysisDialogOpen] = useState(false);
+
     // Filter slots for the current date AND business hours (08:00+)
     const dateStr = format(currentDate, "yyyy-MM-dd");
     const dailySlots = slots
-        .filter(s => s.date.startsWith(dateStr) && s.startTime >= "08:00") // START AT 08:00 
+        .filter(s => {
+            const slotDate = new Date(s.date);
+            return format(slotDate, "yyyy-MM-dd") === dateStr;
+        })
         .sort((a, b) => a.startTime.localeCompare(b.startTime));
 
     const getLevelColor = (level: number) => {
@@ -57,8 +66,21 @@ export function AdminDailyView({ slots, currentDate }: Props) {
         return "bg-yellow-100 text-yellow-800 border-yellow-200 hover:bg-yellow-200";
     };
 
-    const handleSlotClick = (slotId: string) => {
-        setSelectedSlotId(slotId);
+    // Debug Log
+    React.useEffect(() => {
+        if (slots.length > 0) {
+            console.log("First slot type:", slots[0].type);
+            console.log("All types:", slots.map(s => s.type).filter(t => t));
+        }
+    }, [slots]);
+
+    const handleSlotClick = (slot: Timeslot) => {
+        if (slot.type === "ANALYSIS") {
+            setSelectedAnalysisSlot(slot);
+            setIsAnalysisDialogOpen(true);
+            return;
+        }
+        setSelectedSlotId(slot.id);
         setIsDialogOpen(true);
     };
 
@@ -86,16 +108,33 @@ export function AdminDailyView({ slots, currentDate }: Props) {
                                 <div className="flex-1 border-l-2 border-gray-100 pl-2 py-1 hover:border-[#163B40] transition-colors relative">
                                     {/* Slot Background / Action Area */}
                                     <div
-                                        onClick={() => handleSlotClick(slot.id)}
-                                        className="absolute inset-0 cursor-pointer -ml-[2px] border-l-2 border-transparent hover:border-[#163B40] rounded-r-lg hover:bg-gray-50 transition-all"
+                                        onClick={() => handleSlotClick(slot)}
+                                        className={cn(
+                                            "absolute inset-0 cursor-pointer -ml-[2px] border-l-2 border-transparent rounded-r-lg transition-all",
+                                            slot.type === "ANALYSIS"
+                                                ? "bg-purple-100 hover:bg-purple-200 hover:border-purple-500 border-l-purple-500"
+                                                : "hover:bg-gray-50 hover:border-[#163B40]"
+                                        )}
                                     />
+
+                                    {/* Analysis Indicator */}
+                                    {slot.type === "ANALYSIS" && slot.bookings.length === 0 && (
+                                        <div className="absolute right-2 top-2 z-0 opacity-50 pointer-events-none">
+                                            <Activity className="h-6 w-6 text-purple-600" />
+                                        </div>
+                                    )}
 
                                     {/* Bookings Grid - High Density (up to 8 cols) */}
                                     <div className="relative z-10 grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 xl:grid-cols-8 gap-1.5">
                                         {/* Empty State placeholder if no bookings */}
                                         {slot.bookings.length === 0 && (
-                                            <div onClick={() => handleSlotClick(slot.id)} className="text-xs text-gray-400 italic p-1.5 cursor-pointer border border-dashed rounded hover:bg-white/50">
-                                                Frei
+                                            <div onClick={() => handleSlotClick(slot)} className={cn(
+                                                "text-xs p-1.5 cursor-pointer border border-dashed rounded hover:bg-white/50",
+                                                slot.type === "ANALYSIS"
+                                                    ? "text-purple-700 border-purple-400 font-medium bg-white/50"
+                                                    : "text-gray-400 italic"
+                                            )}>
+                                                {slot.type === "ANALYSIS" ? "Analyse buchen" : "Frei"}
                                             </div>
                                         )}
 
@@ -115,7 +154,7 @@ export function AdminDailyView({ slots, currentDate }: Props) {
                                                     key={booking.id}
                                                     onClick={(e) => {
                                                         e.stopPropagation(); // Avoid double trigger
-                                                        handleSlotClick(slot.id);
+                                                        handleSlotClick(slot);
                                                     }}
                                                     className={cn(
                                                         "p-1.5 rounded border shadow-sm cursor-pointer flex flex-col justify-between transition-transform hover:scale-[1.02] relative",
@@ -149,9 +188,13 @@ export function AdminDailyView({ slots, currentDate }: Props) {
                                     <div className="mt-1 h-1 w-full bg-gray-100 rounded-full overflow-hidden relative z-10 opacity-50">
                                         <div
                                             className={cn("h-full transition-all duration-300",
-                                                slot.currentLoad >= slot.capacity_points ? "bg-red-500" : "bg-[#163B40]"
+                                                slot.currentLoad >= slot.capacity_points ? "bg-gray-300" : "bg-[#163B40]"
                                             )}
-                                            style={{ width: `${Math.min((slot.currentLoad / slot.capacity_points) * 100, 100)}%` }}
+                                            style={{
+                                                width: slot.capacity_points > 0
+                                                    ? `${Math.min((slot.currentLoad / slot.capacity_points) * 100, 100)}%`
+                                                    : '0%'
+                                            }}
                                         />
                                     </div>
                                 </div>
@@ -170,6 +213,16 @@ export function AdminDailyView({ slots, currentDate }: Props) {
                     currentLoad={selectedSlot.currentLoad}
                     capacity={selectedSlot.capacity_points}
                     existingBookings={selectedSlot.bookings || []}
+                />
+            )}
+
+            {selectedAnalysisSlot && (
+                <BookAnalysisDialog
+                    key={selectedAnalysisSlot.id}
+                    timeslotId={selectedAnalysisSlot.id}
+                    startTime={selectedAnalysisSlot.startTime}
+                    isOpen={isAnalysisDialogOpen}
+                    onClose={() => setIsAnalysisDialogOpen(false)}
                 />
             )}
         </div>

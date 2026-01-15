@@ -18,6 +18,8 @@ import {
     SelectValue,
 } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
+import { format } from "date-fns";
+import { toZonedTime } from "date-fns-tz";
 
 // Initial State for Server Action
 const initialState = {
@@ -50,10 +52,34 @@ interface Props {
     currentLoad: number;
     capacity: number;
     existingBookings?: any[];
+    availableSlots?: { id: string; startTime: string | Date }[];
 }
 
-export function BookingDialog({ timeslotId, isOpen, onClose, currentLoad, capacity, existingBookings = [] }: Props) {
+export function BookingDialog({ timeslotId, isOpen, onClose, currentLoad, capacity, existingBookings = [], availableSlots = [] }: Props) {
     const [state, formAction] = useActionState(createAdminBooking, initialState);
+
+    // Track selected timeslot (initially from prop)
+    const [selectedSlotId, setSelectedSlotId] = useState(timeslotId);
+
+    // Sync when prop changes
+    useEffect(() => {
+        setSelectedSlotId(timeslotId);
+    }, [timeslotId]);
+
+    // Helper to format time for display
+    const formatSlotTime = (t: string | Date) => {
+        if (t instanceof Date) {
+            // Force UTC Face Value logic if needed, or simple format if local match
+            // Assuming t is UTC (Prisma), we want HH:mm
+            const h = t.getUTCHours().toString().padStart(2, '0');
+            const m = t.getUTCMinutes().toString().padStart(2, '0');
+            return `${h}:${m}`;
+        }
+        if (typeof t === 'string') {
+            return t.substring(0, 5);
+        }
+        return "??:??";
+    };
 
     // UI State
     const [activeTab, setActiveTab] = useState<"B2C" | "B2B">("B2C");
@@ -126,17 +152,11 @@ export function BookingDialog({ timeslotId, isOpen, onClose, currentLoad, capaci
     };
 
     const handleCancel = async (bookingId: string) => {
-        if (!confirm("Möchten Sie diese Buchung wirklich stornieren?")) return;
-
         setIsCancelling(true);
         const res = await cancelBooking(bookingId);
         setIsCancelling(false);
 
         if (res.success) {
-            // Note: The parent should likely re-render, but revalidatePath in action handles it.
-            // We might want to close dialog or just refresh the provided list? 
-            // Since the list comes from props, we need to wait for parent re-render.
-            // For now, let's close to force refresh.
             onClose();
         } else {
             alert(res.message);
@@ -145,9 +165,6 @@ export function BookingDialog({ timeslotId, isOpen, onClose, currentLoad, capaci
 
     const handleMove = async () => {
         if (!editingBookingId || !newDate || !newTime) return;
-
-        if (!confirm(`Termin wirklich auf ${newDate} um ${newTime} verschieben?`)) return;
-
         setLoading(true);
         const res = await moveBooking(editingBookingId, newDate, newTime);
         setLoading(false);
@@ -198,24 +215,24 @@ export function BookingDialog({ timeslotId, isOpen, onClose, currentLoad, capaci
                                             </div>
                                         </div>
                                         <div className="flex gap-1">
-                                            {/* EDIT BUTTON */}
                                             <Button
+                                                type="button"
                                                 size="icon"
                                                 variant="ghost"
                                                 className="h-8 w-8 text-blue-500 hover:bg-blue-50 hover:text-blue-700"
                                                 onClick={() => {
                                                     setEditingBookingId(booking.id);
                                                     setIsMoving(true);
-                                                    setNewDate(""); // reset
-                                                    setNewTime(""); // reset
+                                                    setNewDate("");
+                                                    setNewTime("");
                                                 }}
                                                 disabled={isCancelling || isMoving}
                                             >
                                                 <Pencil className="h-4 w-4" />
                                             </Button>
 
-                                            {/* DELETE BUTTON */}
                                             <Button
+                                                type="button"
                                                 size="icon"
                                                 variant="ghost"
                                                 className="h-8 w-8 text-red-500 hover:bg-red-50 hover:text-red-700"
@@ -264,11 +281,18 @@ export function BookingDialog({ timeslotId, isOpen, onClose, currentLoad, capaci
                                         <SelectValue placeholder="Zeit" />
                                     </SelectTrigger>
                                     <SelectContent>
-                                        {Array.from({ length: 21 }).map((_, i) => { // 08:00 to 18:00
-                                            const hour = Math.floor(i / 2) + 8;
-                                            const min = i % 2 === 0 ? "00" : "30";
-                                            const time = `${hour < 10 ? '0' : ''}${hour}:${min}`;
-                                            if (hour > 18) return null;
+                                        {Array.from({ length: 76 }).map((_, i) => {
+                                            const startHour = 7;
+                                            const startMin = 30;
+
+                                            const totalMinutes = i * 10;
+                                            const hour = startHour + Math.floor((startMin + totalMinutes) / 60);
+                                            const min = (startMin + totalMinutes) % 60;
+
+                                            const time = `${hour < 10 ? '0' : ''}${hour}:${min < 10 ? '0' : ''}${min}`;
+
+                                            if (hour > 20 || (hour === 20 && min > 0)) return null;
+
                                             return (
                                                 <SelectItem key={time} value={time}>{time}</SelectItem>
                                             );
@@ -285,6 +309,7 @@ export function BookingDialog({ timeslotId, isOpen, onClose, currentLoad, capaci
                                 Abbrechen
                             </Button>
                             <Button
+                                type="button"
                                 onClick={handleMove}
                                 disabled={!newDate || !newTime}
                                 className="bg-blue-600 hover:bg-blue-700 text-white"
@@ -294,125 +319,146 @@ export function BookingDialog({ timeslotId, isOpen, onClose, currentLoad, capaci
                         </div>
                     </div>
                 ) : (
-                    <form action={handleSubmit} className="space-y-4 pt-4">
-                        <input type="hidden" name="timeslotId" value={timeslotId} />
-                        <input type="hidden" name="type" value={activeTab} />
-
-                        {/* Duration Selection */}
-                        <div className="space-y-2">
-                            <Label>Dauer</Label>
-                            <Select name="duration" value={duration} onValueChange={setDuration}>
-                                <SelectTrigger>
-                                    <SelectValue placeholder="Dauer wählen" />
-                                </SelectTrigger>
-                                <SelectContent>
-                                    <SelectItem value="30">30 Minuten (1 Einheit)</SelectItem>
-                                    <SelectItem value="60">60 Minuten (2 Einheiten)</SelectItem>
-                                </SelectContent>
-                            </Select>
-                        </div>
-
-                        <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as "B2C" | "B2B")} className="w-full">
-                            <TabsList className="grid w-full grid-cols-2">
-                                <TabsTrigger value="B2C">B2C (Privat)</TabsTrigger>
-                                <TabsTrigger value="B2B">B2B (Firmen)</TabsTrigger>
-                            </TabsList>
-
-                            {/* B2C TAB */}
-                            <TabsContent value="B2C" className="space-y-4 pt-4">
-                                <div className="space-y-2">
-                                    <Label>B2C Kunde Suchen</Label>
-                                    <input type="hidden" name="b2cCustomerId" value={selectedCustomer?.id || ""} />
-                                    <input type="hidden" name="careLevel" value={selectedCustomer?.care_level || 2} />
-
-                                    <div className="border rounded-md p-2 space-y-2">
-                                        <div className="relative">
-                                            <Search className="absolute left-2 top-2.5 h-4 w-4 text-muted-foreground" />
-                                            <Input
-                                                placeholder="Name suchen..."
-                                                className="pl-8"
-                                                value={customerSearch}
-                                                onChange={(e) => setCustomerSearch(e.target.value)}
-                                            />
-                                        </div>
-                                        <div className="max-h-[150px] overflow-y-auto space-y-1">
-                                            {customers
-                                                .filter(c => `${c.firstName} ${c.lastName}`.toLowerCase().includes(customerSearch.toLowerCase()))
-                                                .map(customer => (
-                                                    <div
-                                                        key={customer.id}
-                                                        onClick={() => setSelectedCustomer(customer)}
-                                                        className={`p-2 text-sm rounded cursor-pointer flex justify-between items-center ${selectedCustomer?.id === customer.id ? 'bg-[#163B40] text-white' : 'hover:bg-gray-100'}`}
-                                                    >
-                                                        <div>
-                                                            <div className="font-medium">{customer.firstName} {customer.lastName}</div>
-                                                            <div className={`text-xs ${selectedCustomer?.id === customer.id ? 'text-gray-300' : 'text-gray-500'}`}>
-                                                                Level: {customer.care_level} | Guthaben: {customer.credits}
-                                                            </div>
-                                                        </div>
-                                                        {selectedCustomer?.id === customer.id && <div className="text-xs">Ausgewählt</div>}
-                                                    </div>
-                                                ))}
-                                            {customers.length === 0 && <div className="text-xs text-gray-500 text-center p-2">Keine Kunden gefunden</div>}
-                                        </div>
-                                    </div>
-                                </div>
-                            </TabsContent>
-
-                            {/* B2B TAB */}
-                            <TabsContent value="B2B" className="space-y-4 pt-4">
-                                <div className="space-y-2">
-                                    <Label>Mitarbeiter Suchen</Label>
-                                    <input type="hidden" name="userId" value={selectedUser?.id || ""} />
-
-                                    <div className="border rounded-md p-2 space-y-2">
-                                        <div className="relative">
-                                            <Search className="absolute left-2 top-2.5 h-4 w-4 text-muted-foreground" />
-                                            <Input
-                                                placeholder="Mitarbeiter suchen..."
-                                                className="pl-8"
-                                                value={userSearch}
-                                                onChange={(e) => setUserSearch(e.target.value)}
-                                            />
-                                        </div>
-                                        <div className="max-h-[150px] overflow-y-auto space-y-1">
-                                            {b2bUsers
-                                                .filter(u => `${u.firstName} ${u.lastName}`.toLowerCase().includes(userSearch.toLowerCase()))
-                                                .map(user => (
-                                                    <div
-                                                        key={user.id}
-                                                        onClick={() => setSelectedUser(user)}
-                                                        className={`p-2 text-sm rounded cursor-pointer flex justify-between items-center ${selectedUser?.id === user.id ? 'bg-[#163B40] text-white' : 'hover:bg-gray-100'}`}
-                                                    >
-                                                        <div>
-                                                            <div className="font-medium">{user.firstName} {user.lastName}</div>
-                                                            <div className={`text-xs ${selectedUser?.id === user.id ? 'text-gray-300' : 'text-gray-500'}`}>
-                                                                {user.tenant?.name || "Keine Firma"}
-                                                            </div>
-                                                        </div>
-                                                        {selectedUser?.id === user.id && <div className="text-xs">Ausgewählt</div>}
-                                                    </div>
-                                                ))}
-                                            {b2bUsers.length === 0 && <div className="text-xs text-gray-500 text-center p-2">Keine Mitarbeiter gefunden</div>}
-                                        </div>
-                                    </div>
-                                </div>
-                            </TabsContent>
-                        </Tabs>
-
-                        {state.message && (
-                            <div className={`text-sm font-medium ${state.success ? 'text-green-600' : 'text-red-500'} bg-gray-50 p-2 rounded text-center`}>
-                                {state.message}
+                    <>
+                        {/* Time Selector (Only if alternative slots provided) */}
+                        {availableSlots.length > 0 && !isMoving && (
+                            <div className="space-y-2 bg-gray-50 p-3 rounded border mt-4">
+                                <Label>Genau Startzeit wählen</Label>
+                                <Select value={selectedSlotId} onValueChange={setSelectedSlotId}>
+                                    <SelectTrigger>
+                                        <SelectValue placeholder="Zeit wählen" />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                        {availableSlots.map(slot => (
+                                            <SelectItem key={slot.id} value={slot.id}>
+                                                {formatSlotTime(slot.startTime)} Uhr
+                                            </SelectItem>
+                                        ))}
+                                    </SelectContent>
+                                </Select>
                             </div>
                         )}
 
-                        <div className="flex justify-end gap-2 pt-2">
-                            <Button type="button" variant="outline" onClick={onClose}>Abbrechen</Button>
-                            <Button type="submit" className="bg-[#163B40] hover:bg-[#163B40]/90">
-                                Termin Buchen
-                            </Button>
-                        </div>
-                    </form>
+                        <form action={handleSubmit} className="space-y-4 pt-4">
+                            <input type="hidden" name="timeslotId" value={selectedSlotId} />
+                            <input type="hidden" name="type" value={activeTab} />
+
+                            {/* Duration Selection */}
+                            <div className="space-y-2">
+                                <Label>Dauer</Label>
+                                <Select name="duration" value={duration} onValueChange={setDuration}>
+                                    <SelectTrigger>
+                                        <SelectValue placeholder="Dauer wählen" />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                        <SelectItem value="30">30 Minuten (1 Einheit)</SelectItem>
+                                        <SelectItem value="60">60 Minuten (2 Einheiten)</SelectItem>
+                                    </SelectContent>
+                                </Select>
+                            </div>
+
+                            <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as "B2C" | "B2B")} className="w-full">
+                                <TabsList className="grid w-full grid-cols-2">
+                                    <TabsTrigger value="B2C">B2C (Privat)</TabsTrigger>
+                                    <TabsTrigger value="B2B">B2B (Firmen)</TabsTrigger>
+                                </TabsList>
+
+                                {/* B2C TAB */}
+                                <TabsContent value="B2C" className="space-y-4 pt-4">
+                                    <div className="space-y-2">
+                                        <Label>B2C Kunde Suchen</Label>
+                                        <input type="hidden" name="b2cCustomerId" value={selectedCustomer?.id || ""} />
+                                        <input type="hidden" name="careLevel" value={selectedCustomer?.care_level || 2} />
+
+                                        <div className="border rounded-md p-2 space-y-2">
+                                            <div className="relative">
+                                                <Search className="absolute left-2 top-2.5 h-4 w-4 text-muted-foreground" />
+                                                <Input
+                                                    placeholder="Name suchen..."
+                                                    className="pl-8"
+                                                    value={customerSearch}
+                                                    onChange={(e) => setCustomerSearch(e.target.value)}
+                                                />
+                                            </div>
+                                            <div className="max-h-[150px] overflow-y-auto space-y-1">
+                                                {customers
+                                                    .filter(c => `${c.firstName} ${c.lastName}`.toLowerCase().includes(customerSearch.toLowerCase()))
+                                                    .map(customer => (
+                                                        <div
+                                                            key={customer.id}
+                                                            onClick={() => setSelectedCustomer(customer)}
+                                                            className={`p-2 text-sm rounded cursor-pointer flex justify-between items-center ${selectedCustomer?.id === customer.id ? 'bg-[#163B40] text-white' : 'hover:bg-gray-100'}`}
+                                                        >
+                                                            <div>
+                                                                <div className="font-medium">{customer.firstName} {customer.lastName}</div>
+                                                                <div className={`text-xs ${selectedCustomer?.id === customer.id ? 'text-gray-300' : 'text-gray-500'}`}>
+                                                                    Level: {customer.care_level} | Verfügbar: {customer.credits} Credits
+                                                                </div>
+                                                            </div>
+                                                            {selectedCustomer?.id === customer.id && <div className="text-xs">Ausgewählt</div>}
+                                                        </div>
+                                                    ))}
+                                                {customers.length === 0 && <div className="text-xs text-gray-500 text-center p-2">Keine Kunden gefunden</div>}
+                                            </div>
+                                        </div>
+                                    </div>
+                                </TabsContent>
+
+                                {/* B2B TAB */}
+                                <TabsContent value="B2B" className="space-y-4 pt-4">
+                                    <div className="space-y-2">
+                                        <Label>Mitarbeiter Suchen</Label>
+                                        <input type="hidden" name="userId" value={selectedUser?.id || ""} />
+
+                                        <div className="border rounded-md p-2 space-y-2">
+                                            <div className="relative">
+                                                <Search className="absolute left-2 top-2.5 h-4 w-4 text-muted-foreground" />
+                                                <Input
+                                                    placeholder="Mitarbeiter suchen..."
+                                                    className="pl-8"
+                                                    value={userSearch}
+                                                    onChange={(e) => setUserSearch(e.target.value)}
+                                                />
+                                            </div>
+                                            <div className="max-h-[150px] overflow-y-auto space-y-1">
+                                                {b2bUsers
+                                                    .filter(u => `${u.firstName} ${u.lastName}`.toLowerCase().includes(userSearch.toLowerCase()))
+                                                    .map(user => (
+                                                        <div
+                                                            key={user.id}
+                                                            onClick={() => setSelectedUser(user)}
+                                                            className={`p-2 text-sm rounded cursor-pointer flex justify-between items-center ${selectedUser?.id === user.id ? 'bg-[#163B40] text-white' : 'hover:bg-gray-100'}`}
+                                                        >
+                                                            <div>
+                                                                <div className="font-medium">{user.firstName} {user.lastName}</div>
+                                                                <div className={`text-xs ${selectedUser?.id === user.id ? 'text-gray-300' : 'text-gray-500'}`}>
+                                                                    {user.tenant?.name || "Keine Firma"}
+                                                                </div>
+                                                            </div>
+                                                            {selectedUser?.id === user.id && <div className="text-xs">Ausgewählt</div>}
+                                                        </div>
+                                                    ))}
+                                                {b2bUsers.length === 0 && <div className="text-xs text-gray-500 text-center p-2">Keine Mitarbeiter gefunden</div>}
+                                            </div>
+                                        </div>
+                                    </div>
+                                </TabsContent>
+                            </Tabs>
+
+                            {state.message && (
+                                <div className={`text-sm font-medium ${state.success ? 'text-green-600' : 'text-red-500'} bg-gray-50 p-2 rounded text-center`}>
+                                    {state.message}
+                                </div>
+                            )}
+
+                            <div className="flex justify-end gap-2 pt-2">
+                                <Button type="button" variant="outline" onClick={onClose}>Abbrechen</Button>
+                                <Button type="submit" className="bg-[#163B40] hover:bg-[#163B40]/90">
+                                    Termin Buchen
+                                </Button>
+                            </div>
+                        </form>
+                    </>
                 )}
             </DialogContent>
         </Dialog>

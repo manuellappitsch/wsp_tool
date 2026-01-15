@@ -14,10 +14,7 @@ import { toast } from "sonner";
 import { getAvailableSlots, bookSlot } from "@/actions/booking";
 
 // Mock Data
-const MOCK_SLOTS = [
-    "08:00", "08:30", "09:00", "09:30", "10:00", "11:30",
-    "13:00", "13:30", "14:00", "15:30", "16:00"
-];
+
 
 export default function BookingPage() {
     const [date, setDate] = useState<Date | undefined>(undefined);
@@ -98,7 +95,7 @@ export default function BookingPage() {
                                 <div className="flex justify-between items-center">
                                     <h3 className="font-semibold text-lg text-[#163B40]">Verfügbare Zeiten</h3>
                                     <span className="text-xs font-medium bg-gray-100 px-2.5 py-1 rounded-full text-gray-500">
-                                        {MOCK_SLOTS.length} Slots
+                                        {availableSlots.length} Slots
                                     </span>
                                 </div>
 

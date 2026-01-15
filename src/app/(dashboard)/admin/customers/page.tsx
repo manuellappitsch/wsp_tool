@@ -1,30 +1,64 @@
 import React from "react";
-import { supabaseAdmin } from "@/lib/supabase-admin";
+import { db } from "@/lib/db";
 import { CreateCustomerDialog } from "@/components/admin/CreateCustomerDialog";
 import { AddProductDialog } from "@/components/admin/AddProductDialog";
 import { Badge } from "@/components/ui/badge";
 import { Search } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { format } from "date-fns";
+import { EditCustomerDialog } from "@/components/admin/EditCustomerDialog";
 
 export default async function CustomersPage({ searchParams }: { searchParams: { q?: string } }) {
     const query = searchParams.q || "";
 
-    let customersQuery = supabaseAdmin
-        .from('b2c_customers')
-        .select('*')
-        .order('lastName', { ascending: true });
+    // Using Prisma + Profile table (unified)
+    const now = new Date();
+    const customers = await db.profile.findMany({
+        where: {
+            role: 'B2C_CUSTOMER',
+            ...(query ? {
+                lastName: {
+                    contains: query,
+                    mode: 'insensitive'
+                }
+            } : {})
+        },
+        include: {
+            bookings: {
+                where: {
+                    status: { not: 'CANCELLED' },
+                    timeslot: {
+                        date: { gt: now }
+                    }
+                },
+                include: {
+                    timeslot: true
+                }
+            }
+        },
+        orderBy: {
+            lastName: 'asc'
+        }
+    });
 
-    if (query) {
-        customersQuery = customersQuery.ilike('lastName', `%${query}%`);
-    }
+    // Calculate reserved credits for each customer
+    const customersWithReserved = customers.map(customer => {
+        let reservedCredits = 0;
+        const subEndDate = customer.subscriptionEndDate ? new Date(customer.subscriptionEndDate) : null;
 
-    const { data: customers, error } = await customersQuery;
+        for (const booking of customer.bookings) {
+            const isCovered = subEndDate && subEndDate >= booking.timeslot.date;
+            if (!isCovered) {
+                reservedCredits++;
+            }
+        }
 
-    if (error) {
-        console.error(error);
-        return <div>Fehler beim Laden der Kunden.</div>;
-    }
+        return {
+            ...customer,
+            reservedCredits,
+            totalCredits: customer.credits + reservedCredits
+        };
+    });
 
     return (
         <div className="space-y-6">
@@ -62,7 +96,7 @@ export default async function CustomersPage({ searchParams }: { searchParams: { 
                             </tr>
                         </thead>
                         <tbody className="divide-y">
-                            {customers?.map((customer) => (
+                            {customersWithReserved?.map((customer) => (
                                 <tr key={customer.id} className="hover:bg-gray-50">
                                     <td className="py-3 px-4 font-medium text-gray-900">
                                         {customer.lastName}, {customer.firstName}
@@ -78,9 +112,20 @@ export default async function CustomersPage({ searchParams }: { searchParams: { 
                                     </td>
                                     <td className="py-3 px-4">
                                         <div className="flex flex-col gap-1">
-                                            <div>
-                                                <span className={`font-bold ${customer.credits > 0 ? 'text-green-600' : 'text-gray-500'}`}>
-                                                    {customer.credits} Credits
+                                            <div className="flex items-center gap-2">
+                                                <span className={`font-bold ${customer.credits > 0 ? 'text-green-600' : 'text-gray-400'}`}>
+                                                    {customer.credits}
+                                                </span>
+                                                {customer.reservedCredits > 0 && (
+                                                    <>
+                                                        <span className="text-gray-400">+</span>
+                                                        <span className="font-bold text-yellow-600">
+                                                            {customer.reservedCredits}
+                                                        </span>
+                                                    </>
+                                                )}
+                                                <span className="text-gray-500 text-xs">
+                                                    {customer.reservedCredits > 0 ? `= ${customer.totalCredits} Total` : 'Credits'}
                                                 </span>
                                             </div>
                                             {customer.subscriptionEndDate && new Date(customer.subscriptionEndDate) > new Date() && (
@@ -98,17 +143,14 @@ export default async function CustomersPage({ searchParams }: { searchParams: { 
                                         )}
                                     </td>
                                     <td className="py-3 px-4 text-right">
-                                        <div className="flex justify-end items-center gap-2">
+                                        <div className="flex justify-end items-center gap-1">
+                                            <EditCustomerDialog customer={customer} />
                                             <AddProductDialog customerId={customer.id} customerName={`${customer.firstName} ${customer.lastName}`} />
-                                            {/* Edit Button could go here */}
-                                            <button className="text-gray-500 hover:text-gray-900 text-sm">
-                                                Bearbeiten
-                                            </button>
                                         </div>
                                     </td>
                                 </tr>
                             ))}
-                            {customers?.length === 0 && (
+                            {customersWithReserved?.length === 0 && (
                                 <tr>
                                     <td colSpan={6} className="py-8 text-center text-gray-500">
                                         Keine Kunden gefunden.

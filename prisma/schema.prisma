@@ -13,9 +13,15 @@ datasource db {
 // ENUMS
 // ========================================
 
-enum GlobalAdminRole {
-  SUPER_ADMIN
-  ADMIN
+// ========================================
+// ROLES & PROFILES (One Auth to rule them all)
+// ========================================
+
+enum AppRole {
+  GLOBAL_ADMIN
+  TENANT_ADMIN
+  USER
+  B2C_CUSTOMER
 }
 
 enum InviteStatus {
@@ -37,31 +43,72 @@ enum OrderStatus {
   CANCELLED
 }
 
-// ========================================
-// GLOBAL ADMIN (WSP Verkäufer/Verwaltung)
-// ========================================
+enum SubscriptionType {
+  NORMAL_12
+  NORMAL_6
+  NORMAL_12_BUILDUP
+  NORMAL_6_BUILDUP
+  INTENSE_12
+  INTENSE_6
+  WIN_12
+  WIN_6
+  WIN_12_BUILDUP
+  WIN_6_BUILDUP
+}
 
-model GlobalAdmin {
-  id           String          @id @default(cuid())
-  email        String          @unique
-  passwordHash String
-  firstName    String
-  lastName     String
-  role         GlobalAdminRole @default(ADMIN)
-  isActive     Boolean         @default(true)
+model Profile {
+  id          String   @id @db.Uuid // Matches Supabase Auth User ID
+  email       String   @unique
+  firstName   String?
+  lastName    String?
+  phone       String?  // Added for B2C
+  
+  role        AppRole  @default(B2C_CUSTOMER)
+  
+  // Security / Admin
+  isActive    Boolean  @default(true)
+  emailNotifications Boolean @default(true)
 
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  // Invite System
+  inviteToken String?  @unique
+  inviteStatus InviteStatus @default(PENDING)
+  
+  // B2C Specifics (Nullable)
+  credits     Int      @default(0)
+  careLevel   Int      @default(2)
+  isOffline   Boolean  @default(false)
+  subscriptionType      SubscriptionType?
+  subscriptionStartDate DateTime?
+  subscriptionEndDate   DateTime?
+  notes       String?
 
-  @@map("global_admins")
+  // Tenant Relation (Optional for Global Admin / B2C)
+  tenantId    String?  @db.Uuid
+  tenant      Tenant?  @relation(fields: [tenantId], references: [id])
+  
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
+  // Relations
+  bookings    Booking[]
+  orders      Order[]
+  contentProgress UserContentProgress[]
+
+  @@map("profiles")
 }
 
 // ========================================
 // TENANT (B2B Firma)
 // ========================================
 
+enum QuotaType {
+  NORMAL
+  SPECIAL
+}
+
 model Tenant {
-  id              String  @id @default(cuid())
+  id              String  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  quotaType       QuotaType @default(NORMAL)
   companyName     String
   logoUrl         String?
   primaryColor    String  @default("#1e3a5f") // Dark blue default
@@ -73,82 +120,30 @@ model Tenant {
   billingAddress  String?
   billingZip      String?
   billingCity     String?
-  billingEmail    String?
+  billingEmail    String? // Invoice Email
+
+  // Contact Info
+  vatId           String? // Umsatzsteuer ID
+  contactPhone    String?
+  contactEmail    String? // General Contact Email
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   // Relations
-  admins TenantAdmin[]
-  users  User[]
+  profiles Profile[]
 
   @@map("tenants")
 }
 
 // ========================================
-// TENANT ADMIN (Geschäftsführer Zugang)
-// ========================================
-
-model TenantAdmin {
-  id           String  @id @default(cuid())
-  email        String  @unique
-  passwordHash String?
-  firstName    String
-  lastName     String
-  phone        String?
-  isActive     Boolean @default(true)
-  initialPassword String? // For Admin visibility
-
-  // Invite flow
-  inviteToken  String?      @unique
-  inviteStatus InviteStatus @default(PENDING)
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  // Relations
-  tenantId String
-  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-
-  @@map("tenant_admins")
-}
-
-// ========================================
-// USER (Mitarbeiter)
-// ========================================
-
-model User {
-  id           String  @id @default(cuid())
-  email        String  @unique
-  passwordHash String?
-  firstName    String
-  lastName     String
-  isActive     Boolean @default(true)
-
-  // Invite flow
-  inviteToken  String?      @unique
-  inviteStatus InviteStatus @default(PENDING)
-  
-  // Security (Admin Retrieval)
-  initialPassword String?   // Plain text storage for "Show Password" in Admin. Cleared on user change? No, keeps initial.
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-
-  // Relations
-  tenantId String
-  tenant   Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  bookings Booking[]
-  orders   Order[]
-  contentProgress UserContentProgress[]
-
-  @@map("users")
-}
-
-// ========================================
 // TIMESLOT (Verfügbare Termine)
 // ========================================
+
+enum TimeslotType {
+  NORMAL
+  ANALYSIS
+}
 
 model Timeslot {
   id             String   @id @default(cuid())
@@ -159,6 +154,7 @@ model Timeslot {
   capacity_points Int?    @default(20) // Current Points System Capacity
   bookedCount    Int      @default(0) // Current bookings across all tenants
   isBlocked      Boolean  @default(false)
+  type           TimeslotType @default(NORMAL)
 
   createdAt DateTime @default(now())
 
@@ -178,7 +174,13 @@ model Booking {
   status             BookingStatus @default(CONFIRMED)
   cancellationReason String?
   reminderSentAt     DateTime?
+
   notes              String?
+
+  // Guest Booking Fields
+  guestName  String?
+  guestEmail String?
+  guestPhone String?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -187,23 +189,12 @@ model Booking {
   care_level_snapshot Int @default(2)
 
   // Relations
-  userId     String?   // Make optional to allow pure B2C bookings? Or keep required and use a placeholder user? 
-                       // Plan says "B2CCustomer logic". Usually B2B and B2C are mutually exclusive for a booking.
-                       // So userId should be optional if b2cCustomerId is present.
-  user       User?     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  // Unified Relation to Profile (User or B2C)
+  userId     String   @db.Uuid
+  user       Profile  @relation(fields: [userId], references: [id], onDelete: Cascade)
   
-  b2cCustomerId String?
-  b2cCustomer   B2CCustomer? @relation(fields: [b2cCustomerId], references: [id], onDelete: Cascade)
-
   timeslotId String
   timeslot   Timeslot @relation(fields: [timeslotId], references: [id], onDelete: Cascade)
-
-  // Unique constraint might need adjustment if userId is optional.
-  // @@unique([userId, timeslotId]) -> This fails if userId is null.
-  // We should enforce unique Timeslot booking per person, but Prisma unique constraints with nulls are tricky.
-  // Ideally: One booking per timeslot per person.
-  // If userId is null, check b2cCustomerId.
-  // For now, let's keep it simple. If B2C, strict checking via code.
 
   @@map("bookings")
 }
@@ -227,31 +218,6 @@ model Category {
   products Product[]
 
   @@map("categories")
-}
-
-// ========================================
-// B2C CUSTOMER (Walk-in / Private)
-// ========================================
-
-model B2CCustomer {
-  id        String   @id @default(cuid())
-  firstName String
-  lastName  String
-  email     String   @unique
-  phone     String?
-  credits   Int      @default(0) // Prepaid bookings available
-  careLevel Int      @default(2) // Default Weight for capacity
-  subscriptionEndDate DateTime? // If set and in future -> Flatrate Booking
-  notes     String?
-  isActive  Boolean  @default(true)
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  // Relations
-  bookings Booking[]
-
-  @@map("b2c_customers")
 }
 
 
@@ -293,8 +259,8 @@ model Order {
   updatedAt DateTime @updatedAt
 
   // Relations
-  userId String
-  user   User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId String  @db.Uuid
+  user   Profile @relation(fields: [userId], references: [id], onDelete: Cascade)
   items  OrderItem[]
 
   @@map("orders")
@@ -378,6 +344,19 @@ model OpeningBreak {
   @@map("opening_breaks")
 }
 
+model AnalysisSchedule {
+  id        String   @id @default(cuid())
+  dayOfWeek Int      // 0 = Sunday, 1 = Monday
+  startTime DateTime @db.Time() // Start of analysis window (e.g. 10:00)
+  endTime   DateTime @db.Time() // End of analysis window (e.g. 11:00)
+  isActive  Boolean  @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("analysis_schedules")
+}
+
 // ========================================
 // CONTENT (Lern-Videos & PDFs)
 // ========================================
@@ -428,13 +407,13 @@ model Content {
 
 model UserContentProgress {
   id        String   @id @default(cuid())
-  userId    String
+  userId    String   @db.Uuid
   contentId String
   completed Boolean  @default(false)
   viewedAt  DateTime @default(now())
 
   // Relations
-  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user    Profile @relation(fields: [userId], references: [id], onDelete: Cascade)
   content Content @relation(fields: [contentId], references: [id], onDelete: Cascade)
 
   @@unique([userId, contentId])
@@ -459,4 +438,19 @@ model KanbanTask {
   updatedAt   DateTime  @updatedAt
 
   @@map("kanban_tasks")
+}
+
+// ========================================
+// ADMIN NOTIFICATIONS (Mailbox for System Events)
+// ========================================
+
+model AdminNotification {
+  id        String   @id @default(cuid())
+  title     String
+  message   String   @db.Text
+  type      String   @default("INFO") // INFO, WARNING, CANCEL, SUCCESS
+  isRead    Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  @@map("admin_notifications")
 }

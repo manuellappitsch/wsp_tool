@@ -121,7 +121,8 @@ export function AdminCalendarManager({ initialStart, initialEnd, initialData }: 
             date: s.date,
             startTime: s.startTime,
             endTime: s.endTime,
-            capacity_points: s.capacity
+            capacity_points: s.capacity,
+            type: s.type // Pass type (NORMAL vs ANALYSIS)
         };
     });
 

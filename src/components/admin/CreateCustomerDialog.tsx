@@ -51,9 +51,39 @@ export function CreateCustomerDialog() {
                         </div>
                     </div>
 
+                    <div className="flex items-center space-x-2 pb-2">
+                        <input
+                            type="checkbox"
+                            id="isOffline"
+                            name="isOffline"
+                            className="h-4 w-4 rounded border-gray-300 text-[#163B40] focus:ring-[#163B40]"
+                            onChange={(e) => {
+                                const emailInput = document.getElementById('email') as HTMLInputElement;
+                                if (e.target.checked) {
+                                    emailInput.removeAttribute('required');
+                                    // Optional: Clear or disable input to visualy indicate it's auto-generated
+                                    emailInput.placeholder = "Wird automatisch generiert";
+                                    emailInput.disabled = true;
+                                } else {
+                                    emailInput.setAttribute('required', 'true');
+                                    emailInput.placeholder = "";
+                                    emailInput.disabled = false;
+                                }
+                            }}
+                        />
+                        <Label htmlFor="isOffline" className="cursor-pointer font-medium">
+                            Offline Kunde (Kein Login / Keine E-Mail)
+                        </Label>
+                    </div>
+
                     <div className="space-y-2">
-                        <Label htmlFor="email">E-Mail *</Label>
+                        <Label htmlFor="email">E-Mail {` `}
+                            <span className="text-xs text-gray-400 font-normal">(Pflichtfeld bei Login-User)</span>
+                        </Label>
                         <Input id="email" name="email" type="email" required />
+                        <p className="text-xs text-gray-500">
+                            Bei Offline-Kunden wird eine interne Platzhalter-Adresse generiert.
+                        </p>
                     </div>
 
                     <div className="space-y-2">

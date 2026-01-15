@@ -11,8 +11,10 @@ interface DualBrandLogoProps {
 
 export const DualBrandLogo: React.FC<DualBrandLogoProps> = ({
     customerLogoUrl,
-    customerName = "Partner",
+    customerName,
 }) => {
+    const showPartner = !!customerName || !!customerLogoUrl;
+
     return (
         <motion.div
             initial={{ opacity: 0, scale: 0.95 }}
@@ -27,25 +29,29 @@ export const DualBrandLogo: React.FC<DualBrandLogoProps> = ({
                 </h1>
             </div>
 
-            {/* Separator */}
-            <div className="h-10 w-px bg-border/60 rotate-12" />
+            {showPartner && (
+                <>
+                    {/* Separator */}
+                    <div className="h-10 w-px bg-border/60 rotate-12" />
 
-            {/* Customer Logo */}
-            <div className="flex items-center justify-center">
-                {customerLogoUrl ? (
-                    <img
-                        src={customerLogoUrl}
-                        alt={`${customerName} Logo`}
-                        className="h-10 w-auto object-contain"
-                    />
-                ) : (
-                    <div className="flex flex-col">
-                        <span className="text-xl font-semibold text-foreground">
-                            {customerName}
-                        </span>
+                    {/* Customer Logo */}
+                    <div className="flex items-center justify-center">
+                        {customerLogoUrl ? (
+                            <img
+                                src={customerLogoUrl}
+                                alt={`${customerName} Logo`}
+                                className="h-10 w-auto object-contain"
+                            />
+                        ) : (
+                            <div className="flex flex-col">
+                                <span className="text-xl font-semibold text-foreground">
+                                    {customerName}
+                                </span>
+                            </div>
+                        )}
                     </div>
-                )}
-            </div>
+                </>
+            )}
         </motion.div>
     );
 };

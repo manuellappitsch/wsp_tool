@@ -6,9 +6,10 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Clock, Calendar as CalendarIcon, Server, Shield, Loader2 } from "lucide-react";
+import { Clock, Calendar as CalendarIcon, Server, Shield, Loader2, Activity } from "lucide-react";
 import { DaySchedule, generateTimeslotsForMonth } from "@/actions/schedule";
 import { OpeningHoursEditor } from "@/components/admin/OpeningHoursEditor";
+import { AnalysisSettings } from "@/components/admin/AnalysisSettings";
 import { toast } from "sonner";
 import { VideoManager } from "@/components/admin/content/VideoManager";
 import { CourseManager } from "@/components/admin/content/CourseManager";
@@ -18,11 +19,12 @@ import { deleteCourse } from "@/actions/content";
 
 interface Props {
     openingHours: DaySchedule[];
+    analysisSchedules: any[]; // Using any for simplicity or import the interface
     courses: any[];
     orphanVideos: any[];
 }
 
-export function SettingsClient({ openingHours, courses, orphanVideos }: Props) {
+export function SettingsClient({ openingHours, analysisSchedules, courses, orphanVideos }: Props) {
     const [isGenerating, startTransition] = useTransition();
 
     // Video/Course State
@@ -88,6 +90,21 @@ export function SettingsClient({ openingHours, courses, orphanVideos }: Props) {
                             </CardHeader>
                             <CardContent>
                                 <OpeningHoursEditor initialData={openingHours} />
+                            </CardContent>
+                        </Card>
+
+                        {/* Analysis Settings */}
+                        <Card className="border-purple-100 bg-purple-50/30">
+                            <CardHeader>
+                                <CardTitle className="flex items-center gap-2 text-purple-900">
+                                    <Activity className="h-5 w-5" /> Biomechanische Analyse
+                                </CardTitle>
+                                <CardDescription>
+                                    Definieren Sie Zeitfenster, die exklusiv für Analysen reserviert sind.
+                                </CardDescription>
+                            </CardHeader>
+                            <CardContent>
+                                <AnalysisSettings schedules={analysisSchedules} />
                             </CardContent>
                         </Card>
                     </div>

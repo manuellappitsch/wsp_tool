@@ -28,7 +28,9 @@ export function CreateTenantDialog({ trigger }: { trigger?: React.ReactNode }) {
                 toast.error(result.error);
             } else {
                 toast.success("Partner erfolgreich erstellt!");
+                // @ts-ignore
                 if (result.password) {
+                    // @ts-ignore
                     setSuccessData({ password: result.password, email });
                 } else {
                     setOpen(false);
@@ -43,7 +45,10 @@ export function CreateTenantDialog({ trigger }: { trigger?: React.ReactNode }) {
     };
 
     return (
-        <Dialog open={open} onOpenChange={(val) => !val && handleClose()}>
+        <Dialog open={open} onOpenChange={(val) => {
+            if (!val) handleClose();
+            else setOpen(true);
+        }}>
             <DialogTrigger asChild>
                 {trigger || (
                     <Button className="bg-[#163B40] hover:bg-[#0e2629]">

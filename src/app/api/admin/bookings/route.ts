@@ -8,12 +8,9 @@ import { supabaseAdmin } from "@/lib/supabase-admin";
 
 const adminBookingSchema = z.object({
     timeslotId: z.string().min(1),
-    userId: z.string().optional(),
-    b2cCustomerId: z.string().optional(),
+    userId: z.string().min(1, "User ID Required"),
     notes: z.string().optional(),
     careLevel: z.number().optional().default(2)
-}).refine(data => data.userId || data.b2cCustomerId, {
-    message: "Either userId or b2cCustomerId must be provided"
 });
 
 // POST /api/admin/bookings - Admin creates a booking
@@ -24,25 +21,13 @@ export async function POST(req: NextRequest) {
         return new NextResponse("Unauthorized", { status: 401 });
     }
 
-    // Verify Admin Access
-    // We check if the user is a Global Admin or Tenant Admin?
-    // User request says "Create/Update /api/admin/bookings ... from the new Calendar Dialog".
-    // This implies Global Admin or Tenant Admin usage. 
-    // Let's check DB role or simplified session check.
-
-    // For now, assuming anyone with access to the Admin Dashboard (checked by middleware/layout) can call this.
-    // Ideally, we check role here.
-    const { data: user } = await supabaseAdmin.from('users').select('*, global_admins(*)').eq('id', session.user.id).single();
-    if (!user) return new NextResponse("Forbidden", { status: 403 });
-    // This is weak auth check, relying on layout/middleware mostly. 
-    // TODO: Strengthen if needed.
-
     try {
         const body = await req.json();
-        const { timeslotId, userId, b2cCustomerId, notes, careLevel } = adminBookingSchema.parse(body);
+        const { timeslotId, userId, notes } = adminBookingSchema.parse(body);
 
+        // Unified Booking Service Call
         const result = await BookingService.createBooking(
-            { userId, b2cCustomerId },
+            { userId },
             timeslotId,
             notes
         );

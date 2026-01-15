@@ -14,14 +14,26 @@ import {
     DropdownMenuSeparator,
     DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { ProfileSettingsDialog } from "@/components/profile/ProfileSettingsDialog";
 
 interface DashboardHeaderProps {
     userRole: string;
 }
 
 export function DashboardHeader({ userRole }: DashboardHeaderProps) {
+    const [isProfileOpen, setIsProfileOpen] = React.useState(false);
+
+    // Dynamic handling of "Settings" visibility - only for Sportler (User/B2C)
+    // Actually we can show it for everyone, but the action only supports User/B2C.
+    // Let's show it always, as it won't hurt.
+
     return (
         <header className="h-16 border-b border-gray-100 bg-white/80 backdrop-blur-md sticky top-0 z-30 flex items-center justify-between px-6">
+
+            <ProfileSettingsDialog
+                open={isProfileOpen}
+                onOpenChange={setIsProfileOpen}
+            />
 
             {/* Left: Mobile Menu & Title */}
             <div className="flex items-center gap-4">
@@ -65,7 +77,9 @@ export function DashboardHeader({ userRole }: DashboardHeaderProps) {
                             </div>
                         </DropdownMenuLabel>
                         <DropdownMenuSeparator />
-                        <DropdownMenuItem>Profile</DropdownMenuItem>
+                        <DropdownMenuItem onSelect={() => setIsProfileOpen(true)}>
+                            Profil & Einstellungen
+                        </DropdownMenuItem>
                         <DropdownMenuItem>Billing</DropdownMenuItem>
                         <DropdownMenuSeparator />
                         <DropdownMenuItem className="text-red-600">

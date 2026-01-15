@@ -9,6 +9,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Plus, Users, Zap } from "lucide-react";
 import { BookingDialog } from "./BookingDialog";
+import { BookAnalysisDialog } from "./BookAnalysisDialog";
 
 interface Props {
     weekStart: Date;
@@ -18,20 +19,52 @@ interface Props {
 
 export function AdminCalendarGrid({ weekStart, timeslots, bookingsMap }: Props) {
     const days = [0, 1, 2, 3, 4, 5, 6].map(offset => addDays(weekStart, offset));
-    const hours = Array.from({ length: 18 }, (_, i) => i + 6); // 06:00 to 23:00
+
+    // Dynamic Hours Calculation
+    let minHour = 7;
+    let maxHour = 20;
+
+    if (timeslots.length > 0) {
+        minHour = 24;
+        maxHour = 0;
+        timeslots.forEach(t => {
+            let h = 0;
+            if (typeof t.startTime === 'string') {
+                h = parseInt(t.startTime.split(':')[0], 10);
+            } else {
+                try {
+                    h = toZonedTime(new Date(t.startTime), 'Europe/Berlin').getHours();
+                } catch (e) { }
+            }
+            if (h < minHour) minHour = h;
+            if (h > maxHour) maxHour = h;
+        });
+
+        // Add buffer
+        if (maxHour < 20) maxHour = 20;
+        if (minHour > 7) minHour = 7;
+    }
+
+    const hours = Array.from({ length: maxHour - minHour + 1 }, (_, i) => i + minHour);
 
     const [selectedSlot, setSelectedSlot] = useState<any | null>(null);
+    const [relatedSlots, setRelatedSlots] = useState<any[]>([]); // SIBLINGS
     const [isDialogOpen, setIsDialogOpen] = useState(false);
+    const [isAnalysisDialogOpen, setIsAnalysisDialogOpen] = useState(false);
 
-    const handleSlotClick = (slot: any) => {
+    const handleSlotClick = (slot: any, siblings: any[] = []) => {
         setSelectedSlot(slot);
-        setIsDialogOpen(true);
+        setRelatedSlots(siblings);
+        if (slot.type === 'ANALYSIS') {
+            setIsAnalysisDialogOpen(true);
+        } else {
+            setIsDialogOpen(true);
+        }
     };
 
     const [currentTime, setCurrentTime] = useState(new Date());
 
     React.useEffect(() => {
-        // Update every minute
         const interval = setInterval(() => setCurrentTime(new Date()), 60000);
         return () => clearInterval(interval);
     }, []);
@@ -56,25 +89,18 @@ export function AdminCalendarGrid({ weekStart, timeslots, bookingsMap }: Props) 
                 {/* Grid */}
                 {hours.map(hour => {
                     const isCurrentHour = hour === currentHour;
-                    // Calculate percentage position of the red line (approximate for the 2-row grid)
-                    // We have gap-2, so perfect % might be slightly off but good enough for visual.
                     const topPercent = (currentMinute / 60) * 100;
 
                     return (
-                        <div key={hour} className="grid grid-cols-8 gap-2 mb-2 relative">
-                            {/* Current Time Line Overlay */}
+                        <div key={hour} className="grid grid-cols-8 gap-2 mb-2 relative min-h-[100px]">
+                            {/* Time Line */}
                             {isCurrentHour && (
-                                <div
-                                    className="absolute left-0 w-full z-20 flex items-center pointer-events-none"
-                                    style={{ top: `${topPercent}%` }}
-                                >
-                                    {/* Time Label on the left in the "Time" column area */}
+                                <div className="absolute left-0 w-full z-20 flex items-center pointer-events-none" style={{ top: `${topPercent}%` }}>
                                     <div className="w-[12.5%] pr-2 flex justify-end">
                                         <span className="bg-red-500 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full shadow-sm">
                                             {format(currentTime, 'HH:mm')}
                                         </span>
                                     </div>
-                                    {/* The Line spanning the rest */}
                                     <div className="flex-1 h-[2px] bg-red-400/80 shadow-sm relative">
                                         <div className="absolute -left-1 -top-[3px] w-2 h-2 bg-red-500 rounded-full" />
                                     </div>
@@ -82,125 +108,190 @@ export function AdminCalendarGrid({ weekStart, timeslots, bookingsMap }: Props) 
                             )}
 
                             {/* Time Label */}
-                            <div className="text-center font-medium text-gray-400 pt-4 row-span-2">
+                            <div className="text-center font-medium text-gray-400 pt-2 text-sm">
                                 {hour}:00
                             </div>
 
-                            {/* Days - 2 Rows for 30 min slots */}
-                            {[0, 30].map(minute => (
-                                <React.Fragment key={`${hour}:${minute}`}>
-                                    {minute === 30 && <div className="hidden" />} {/* Skip first col for second row/grid alignment if using standard grid logic, but here we invoke grid-cols-8 so correct */}
+                            {/* Days - One Cell per Hour */}
+                            {days.map(day => {
+                                // Find all slots in this hour
+                                const slotsInHour = timeslots.filter(t => {
+                                    const dayStr = format(toZonedTime(day, 'Europe/Berlin'), 'yyyy-MM-dd');
 
-                                    {days.map(day => {
-                                        // Robust Matching Logic for 30 min slots
-                                        const slot = timeslots.find((t, index) => {
-                                            // 1. Check Date
-                                            const slotDate = new Date(t.date);
-                                            if (!isSameDay(slotDate, day)) return false;
+                                    // Robust Date Check
+                                    let slotDateStr = "";
+                                    if (t.date instanceof Date) {
+                                        slotDateStr = format(t.date, 'yyyy-MM-dd');
+                                    } else if (typeof t.date === 'string') {
+                                        slotDateStr = t.date.substring(0, 10);
+                                    }
 
-                                            // 2. Check Time Logic (Fix for String Format "HH:mm")
-                                            if (typeof t.startTime === 'string') {
-                                                const [hStr, mStr] = t.startTime.split(':');
-                                                const h = parseInt(hStr, 10);
-                                                const m = parseInt(mStr, 10);
-                                                return h === hour && m === minute;
-                                            }
+                                    if (slotDateStr !== dayStr) return false;
 
-                                            // Legacy Fallback (if somehow Date object)
-                                            try {
-                                                const d = new Date(t.startTime);
-                                                const zoned = toZonedTime(d, 'Europe/Berlin');
-                                                return zoned.getUTCHours() === hour && zoned.getUTCMinutes() === minute;
-                                            } catch (e) { return false; }
-                                        });
+                                    let h = -1;
+                                    if (typeof t.startTime === 'string') {
+                                        h = parseInt(t.startTime.split(':')[0], 10);
+                                    } else {
+                                        try {
+                                            const d = new Date(t.startTime);
+                                            h = toZonedTime(d, 'Europe/Berlin').getHours();
+                                        } catch (e) { }
+                                    }
+                                    return h === hour;
+                                }).sort((a, b) => {
+                                    // Sort by minutes
+                                    const getMin = (t: any) => {
+                                        if (typeof t.startTime === 'string') return parseInt(t.startTime.split(':')[1], 10);
+                                        return new Date(t.startTime).getMinutes();
+                                    };
+                                    return getMin(a) - getMin(b);
+                                });
 
-                                        // If no slot exists in DB/Props for this time:
-                                        if (!slot) {
-                                            return (
-                                                <div key={day.toISOString() + hour + minute} className="h-16 bg-white rounded-xl border border-gray-100 flex items-center justify-center relative">
-                                                    {/* Empty State - Clean */}
-                                                </div>
-                                            );
-                                        }
+                                // Calculate Stats
+                                let totalBookings = 0;
+                                let maxCapacity = slotsInHour.length * 1; // Assuming cap 1 per slot
 
-                                        const bookings = bookingsMap[slot.id] || [];
-                                        const capacityPoints = slot.capacity_points || 20;
-                                        const currentPoints = bookings.reduce((sum: number, b: any) => sum + (b.care_level_snapshot || 0), 0);
+                                const bookedSlots = slotsInHour.filter(slot => {
+                                    const bookings = bookingsMap[slot.id] || [];
+                                    if (bookings.length > 0) totalBookings += bookings.length;
+                                    return bookings.length > 0;
+                                });
 
-                                        // Traffic Light Dot
-                                        const usage = currentPoints / capacityPoints;
-                                        let dotColor = "bg-green-400";
-                                        if (usage > 0.9) dotColor = "bg-red-500";
-                                        else if (usage > 0.6) dotColor = "bg-yellow-400";
+                                // Special Handling: If any slot in this hour is ANALYSIS type, treat the rendering differently
+                                // Analysis slots are typically 10 mins but booked as 60 mins blocks usually?
+                                // Actually, our logic generates 10 min slots. 
+                                // In Daily View we show 10 mins. Here we show slots in the hour list.
+                                // We should style them purple if type=ANALYSIS.
 
-                                        return (
-                                            <button
-                                                type="button"
-                                                key={slot.id}
-                                                onClick={(e) => {
-                                                    e.stopPropagation();
-                                                    handleSlotClick(slot);
-                                                }}
-                                                className={`h-16 w-full text-left bg-white border border-gray-100 rounded-xl p-2 relative flex flex-col justify-start gap-1 shadow-sm hover:shadow-md transition-all cursor-pointer group z-10 ${bookings.length > 0 ? "bg-[#EAF8F7]/10 border-[#2CC8C5]/30" : ""}`}
-                                            >
-                                                <div className="flex justify-between items-start w-full">
-                                                    <div className={`w-2.5 h-2.5 rounded-full ${dotColor}`}></div>
-
-                                                    {currentPoints > 0 && (
-                                                        <span className="text-[10px] font-bold text-gray-500 bg-gray-100 px-1.5 py-0.5 rounded">
-                                                            Lvl {currentPoints}
-                                                        </span>
-                                                    )}
-                                                </div>
-
-                                                {/* Booking Pills */}
-                                                <div className="flex flex-col gap-1 overflow-y-auto max-h-[36px] no-scrollbar w-full">
-                                                    {bookings.map((b: any) => {
-                                                        let pillColor = "bg-gray-100 text-gray-600";
-                                                        const level = b.care_level_snapshot || b.b2cCustomer?.careLevel || 0;
-
-                                                        if (level === 2) pillColor = "bg-green-100 text-green-700 font-medium";
-                                                        if (level === 3) pillColor = "bg-yellow-100 text-yellow-700 font-medium";
-                                                        if (level >= 5) pillColor = "bg-blue-100 text-blue-700 font-medium";
-
-                                                        const name = b.b2cCustomer ? b.b2cCustomer.lastName : (b.user ? b.user.lastName : "Unknown");
-                                                        const isCheckedIn = b.status === "COMPLETED";
-
-                                                        return (
-                                                            <div key={b.id} className={`text-[10px] px-1 rounded truncate flex items-center gap-1 ${isCheckedIn ? "bg-green-600 text-white font-bold" : pillColor}`}>
-                                                                {isCheckedIn && <div className="w-1.5 h-1.5 bg-white rounded-full flex-shrink-0" />}
-                                                                {name}
-                                                            </div>
-                                                        )
-                                                    })}
-                                                </div>
-
-                                                {currentPoints < capacityPoints && (
-                                                    <div className="absolute bottom-1 right-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                                                        <Plus className="h-3 w-3 text-gray-400" />
-                                                    </div>
+                                return (
+                                    <div key={day.toISOString() + hour} className="bg-white border border-gray-100 rounded-xl p-2 relative flex flex-col gap-1 shadow-sm h-full group">
+                                        {/* Header: Occupancy */}
+                                        <div className="flex justify-between items-center mb-1">
+                                            <div className="text-[10px] font-bold text-gray-400">
+                                                {slotsInHour.length > 0 ? (
+                                                    <span className={totalBookings > 0 ? "text-[#163B40]" : ""}>{totalBookings} / {slotsInHour.length} Slots</span>
+                                                ) : (
+                                                    "-"
                                                 )}
-                                            </button>
-                                        );
-                                    })}
-                                </React.Fragment>
-                            ))}
+                                            </div>
+                                            {/* Quick Add Button (opens first empty slot?) */}
+                                            {slotsInHour.length > 0 && totalBookings < slotsInHour.length && slotsInHour.some(s => {
+                                                const [h, m] = s.startTime.split(':').map(Number);
+                                                const slotDate = new Date(day);
+                                                slotDate.setHours(h, m, 0, 0);
+                                                return slotDate > new Date();
+                                            }) && (
+                                                    <button
+                                                        className="opacity-0 group-hover:opacity-100 p-1 hover:bg-gray-100 rounded transition-all"
+                                                        onClick={() => {
+                                                            // Find first empty FUTURE slot
+                                                            const firstEmpty = slotsInHour.find(s => {
+                                                                const [h, m] = s.startTime.split(':').map(Number);
+                                                                const slotDate = new Date(day);
+                                                                slotDate.setHours(h, m, 0, 0);
+                                                                return (!bookingsMap[s.id] || bookingsMap[s.id].length === 0) && slotDate > new Date();
+                                                            });
+                                                            if (firstEmpty) handleSlotClick(firstEmpty, slotsInHour);
+                                                        }}
+                                                    >
+                                                        <Plus className="w-3 h-3 text-gray-500" />
+                                                    </button>
+                                                )}
+                                        </div>
+
+                                        {/* List Bookings */}
+                                        <div className="flex flex-col gap-1.5 overflow-hidden">
+                                            {slotsInHour.map(slot => {
+                                                const bookings = bookingsMap[slot.id] || [];
+                                                const isAnalysis = slot.type === 'ANALYSIS';
+                                                const isBooked = bookings.length > 0;
+
+                                                // If Analysis and NOT booked, we might want to show it distinctly too?
+                                                // Or just show booked ones? 
+                                                // Current UX: "List Bookings" section usually only showed booked.
+                                                // But user wants to see "Booking available".
+                                                // In the original code, `bookedSlots.map` was used.
+                                                // Let's iterate all slots if meaningful, or maybe just grouped?
+                                                // If we list EVERY 10 min slot it will overflow.
+                                                // Strategy: Show Booked Slots + "Free Analysis" Blocks? 
+                                                // Simplify: Keep listing BOOKED items + maybe a "Analyse verfügbar" badge?
+                                                // Actually, if I click "plus", I get the dialog.
+
+                                                if (!isBooked) return null;
+
+                                                // Get Time string
+                                                let timeStr = "";
+                                                if (typeof slot.startTime === 'string') timeStr = slot.startTime;
+                                                else timeStr = format(toZonedTime(new Date(slot.startTime), 'Europe/Berlin'), 'HH:mm');
+
+                                                return bookings.map((b: any) => {
+                                                    const name = b.b2cCustomer ? b.b2cCustomer.lastName : (b.user ? b.user.lastName : (b.guestName || "Geist"));
+                                                    const baseClasses = isAnalysis
+                                                        ? "bg-purple-100 text-purple-900 border-purple-200 hover:bg-purple-200"
+                                                        : "bg-[#EAF8F7] text-[#163B40] border-[#2CC8C5]/20 hover:bg-[#2CC8C5]/10";
+
+                                                    return (
+                                                        <button
+                                                            key={b.id}
+                                                            onClick={(e) => { e.stopPropagation(); handleSlotClick(slot, slotsInHour); }}
+                                                            className={`text-[10px] border px-1.5 py-1 rounded w-full text-left truncate flex items-center gap-1 ${baseClasses}`}
+                                                        >
+                                                            <span className="font-mono opacity-70 text-[9px]">{timeStr}</span>
+                                                            <span className="font-medium truncate">{name}</span>
+                                                        </button>
+                                                    );
+                                                });
+                                            })}
+
+                                            {/* Special Analysis Indicator if Hour has Analysis Slots but no bookings */}
+                                            {slotsInHour.some(s => s.type === 'ANALYSIS') && totalBookings === 0 && (
+                                                <button
+                                                    onClick={() => {
+                                                        const first = slotsInHour.find(s => s.type === 'ANALYSIS');
+                                                        if (first) handleSlotClick(first, slotsInHour);
+                                                    }}
+                                                    className="text-[10px] bg-purple-50 text-purple-700 border border-purple-200 border-dashed px-2 py-2 rounded-md w-full text-center hover:bg-purple-100 transition-colors"
+                                                >
+                                                    Analyse<br />verfügbar
+                                                </button>
+                                            )}
+
+                                            {totalBookings === 0 && !slotsInHour.some(s => s.type === 'ANALYSIS') && slotsInHour.length > 0 && (
+                                                <div className="flex-1 flex items-center justify-center text-gray-300 text-xs italic">
+                                                    Leer
+                                                </div>
+                                            )}
+                                        </div>
+                                    </div>
+                                );
+                            })}
                         </div>
                     );
                 })}
             </div>
 
-            {/* Dialog */}
+            {/* Dialogs */}
             {selectedSlot && (
-                <BookingDialog
-                    key={selectedSlot.id}
-                    timeslotId={selectedSlot.id}
-                    isOpen={isDialogOpen}
-                    onClose={() => setIsDialogOpen(false)}
-                    currentLoad={bookingsMap[selectedSlot.id]?.reduce((s: number, b: any) => s + (b.care_level_snapshot || 0), 0) || 0}
-                    capacity={selectedSlot.capacity_points || 20}
-                    existingBookings={bookingsMap[selectedSlot.id] || []}
-                />
+                <>
+                    <BookingDialog
+                        key={`booking-${selectedSlot.id}`}
+                        timeslotId={selectedSlot.id}
+                        isOpen={isDialogOpen}
+                        onClose={() => setIsDialogOpen(false)}
+                        currentLoad={bookingsMap[selectedSlot.id]?.length || 0}
+                        capacity={selectedSlot.capacity_points || 1}
+                        existingBookings={bookingsMap[selectedSlot.id] || []}
+                        availableSlots={relatedSlots}
+                    />
+
+                    <BookAnalysisDialog
+                        key={`analysis-${selectedSlot.id}`}
+                        isOpen={isAnalysisDialogOpen}
+                        onClose={() => setIsAnalysisDialogOpen(false)}
+                        timeslotId={selectedSlot.id}
+                        startTime={typeof selectedSlot.startTime === 'string' ? selectedSlot.startTime : format(toZonedTime(new Date(selectedSlot.startTime), 'Europe/Berlin'), 'HH:mm')}
+                    />
+                </>
             )}
         </div>
     );

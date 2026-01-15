@@ -116,16 +116,18 @@ export function OpeningHoursEditor({ initialData }: Props) {
                                     <div className="flex items-center gap-2">
                                         <Input
                                             type="time"
+                                            step="600" // 10 minutes
                                             value={day.startTime}
                                             onChange={(e) => updateDay(day.dayOfWeek, { startTime: e.target.value })}
-                                            className="w-24 h-8 text-sm"
+                                            className="w-32 h-8 text-sm"
                                         />
                                         <span className="text-gray-400">-</span>
                                         <Input
                                             type="time"
+                                            step="600" // 10 minutes
                                             value={day.endTime}
                                             onChange={(e) => updateDay(day.dayOfWeek, { endTime: e.target.value })}
-                                            className="w-24 h-8 text-sm"
+                                            className="w-32 h-8 text-sm"
                                         />
                                     </div>
 
@@ -135,16 +137,18 @@ export function OpeningHoursEditor({ initialData }: Props) {
                                             <span className="text-xs text-gray-400 w-12">Pause:</span>
                                             <Input
                                                 type="time"
+                                                step="600" // 10 minutes
                                                 value={brk.startTime}
                                                 onChange={(e) => updateBreak(day.dayOfWeek, idx, "startTime", e.target.value)}
-                                                className="w-20 h-7 text-xs bg-gray-50"
+                                                className="w-28 h-7 text-xs bg-gray-50"
                                             />
                                             <span className="text-gray-400">-</span>
                                             <Input
                                                 type="time"
+                                                step="600" // 10 minutes
                                                 value={brk.endTime}
                                                 onChange={(e) => updateBreak(day.dayOfWeek, idx, "endTime", e.target.value)}
-                                                className="w-20 h-7 text-xs bg-gray-50"
+                                                className="w-28 h-7 text-xs bg-gray-50"
                                             />
                                             <Button
                                                 variant="ghost"
