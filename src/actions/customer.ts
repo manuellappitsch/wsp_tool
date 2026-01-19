@@ -7,6 +7,18 @@ import { db } from "@/lib/db";
 import { supabaseAdmin } from "@/lib/supabase-admin";
 import { createId } from "@paralleldrive/cuid2";
 
+import { EmailTemplates } from "@/lib/email-templates";
+import { sendEmail, EMAIL_SENDER_SUPPORT } from "@/lib/resend";
+
+function generatePassword(length = 12) {
+    const chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%";
+    let ret = "";
+    for (let i = 0; i < length; ++i) {
+        ret += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+    return ret;
+}
+
 export async function createCustomer(prevState: any, formData: FormData) {
     const firstName = formData.get("firstName") as string;
     const lastName = formData.get("lastName") as string;
@@ -52,9 +64,11 @@ export async function createCustomer(prevState: any, formData: FormData) {
     try {
         // 1. Create Supabase Auth User
         // Use auto-confirm so they exist immediately
+        const initialPassword = isOffline ? createId() : generatePassword();
+
         const { data: authUser, error: authError } = await supabaseAdmin.auth.admin.createUser({
             email,
-            password: createId(), // Random complicated password, they won't use it if offline
+            password: initialPassword,
             email_confirm: true,
             user_metadata: { firstName, lastName, role: 'B2C_CUSTOMER', isOffline }
         });
@@ -88,8 +102,19 @@ export async function createCustomer(prevState: any, formData: FormData) {
             }
         });
 
+        // 3. Send Invite Email (if Online)
+        if (!isOffline) {
+            const emailHtml = EmailTemplates.accountCredentials(`${firstName} ${lastName}`, email, initialPassword);
+            await sendEmail({
+                to: email,
+                subject: "Willkommen im WSP Portal – Deine Zugangsdaten",
+                html: emailHtml,
+                from: EMAIL_SENDER_SUPPORT
+            });
+        }
+
         revalidatePath("/admin/customers");
-        return { success: true, message: "Kunde erfolgreich angelegt." };
+        return { success: true, message: "Kunde erfolgreich angelegt. Einladung gesendet." };
 
     } catch (e: any) {
         console.error("Create Customer Error:", e);

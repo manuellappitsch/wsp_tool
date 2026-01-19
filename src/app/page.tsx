@@ -69,10 +69,8 @@ export default function LoginPage() {
       >
         {/* Branding Header */}
         <div className="flex flex-col items-center mb-10 space-y-4">
-          <DualBrandLogo customerName="B2B Partner" />
-          <p className="text-muted-foreground font-medium text-center max-w-xs">
-            Schmerzfrei durch den Alltag –<br />Willkommen im Partner-Portal.
-          </p>
+          <DualBrandLogo customerName="Portal" />
+
         </div>
 
         <Card className="border-none shadow-xl shadow-gray-200/50 bg-white rounded-[2rem] overflow-hidden">
@@ -155,11 +153,7 @@ export default function LoginPage() {
         </Card>
 
         {/* Footer Links (like screenshot) */}
-        <div className="mt-8 flex justify-center space-x-6 text-sm text-gray-400">
-          <a href="#" className="hover:text-primary transition-colors">Impressum</a>
-          <a href="#" className="hover:text-primary transition-colors">Datenschutz</a>
-          <a href="#" className="hover:text-primary transition-colors">Hilfe</a>
-        </div>
+
 
       </motion.div>
     </div>

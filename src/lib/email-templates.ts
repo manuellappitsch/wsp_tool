@@ -107,4 +107,20 @@ export const EmailTemplates = {
       <p>Dein WSP Team</p>
     </div>
   `,
+
+  passwordReset: (userName: string, resetLink: string) => `
+    <div style="font-family: sans-serif; color: #1e3a5f; line-height: 1.6;">
+      <h1 style="color: #163B40;">Passwort zurücksetzen 🔐</h1>
+      <p>Hallo ${userName},</p>
+      <p>wir haben eine Anfrage erhalten, dein Passwort für das WSP Portal zurückzusetzen.</p>
+      
+      <div style="margin: 30px 0;">
+        <a href="${resetLink}" style="display: inline-block; background: #163B40; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; font-weight: bold;">Passwort ändern</a>
+      </div>
+
+      <p style="font-size: 0.9em; color: #666;">Dieser Link ist 60 Minuten gültig. Falls du das nicht warst, kannst du diese E-Mail ignorieren.</p>
+      
+      <p>Dein WSP Team</p>
+    </div>
+  `,
 };

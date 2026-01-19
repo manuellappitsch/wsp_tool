@@ -72,6 +72,10 @@ model Profile {
   // Invite System
   inviteToken String?  @unique
   inviteStatus InviteStatus @default(PENDING)
+
+  // Password Reset
+  resetToken       String?   @unique
+  resetTokenExpiry DateTime?
   
   // B2C Specifics (Nullable)
   credits     Int      @default(0)
