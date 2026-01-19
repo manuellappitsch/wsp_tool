@@ -87,7 +87,31 @@ export async function requestPasswordReset(formData: FormData) {
     }
 
     try {
-        const user = await db.profile.findUnique({ where: { email } });
+        let user = await db.profile.findUnique({ where: { email } });
+
+        // Self-Healing: If profile missing but User exists in Supabase Auth
+        if (!user) {
+            console.log("Profile not found in DB, checking Supabase Auth for:", email);
+            const { data: { users }, error: listError } = await supabaseAdmin.auth.admin.listUsers();
+
+            if (!listError && users) {
+                const authUser = users.find(u => u.email?.toLowerCase() === email.toLowerCase());
+                if (authUser) {
+                    console.log("Found in Auth, creating missing profile for:", authUser.id);
+                    // Create Profile from Auth Data
+                    user = await db.profile.create({
+                        data: {
+                            id: authUser.id,
+                            email: authUser.email!,
+                            firstName: authUser.user_metadata?.firstName || "",
+                            lastName: authUser.user_metadata?.lastName || "",
+                            role: (authUser.user_metadata?.role as any) || 'USER',
+                            isActive: true
+                        }
+                    });
+                }
+            }
+        }
 
         // Don't reveal if user exists (Security Best Practice)
         // But for friendly UX in this internal-like tool, maybe we do? 
