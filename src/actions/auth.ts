@@ -131,7 +131,14 @@ export async function requestPasswordReset(formData: FormData) {
         });
 
         // Send Email
-        const resetLink = `${process.env.NEXTAUTH_URL}/update-password?token=${resetToken}`;
+        let baseUrl = process.env.NEXTAUTH_URL || "https://portal.wsp-graz.com";
+
+        // Safety fix: If Vercel Prod has 'localhost' configured, override it
+        if (process.env.VERCEL_ENV === "production" && baseUrl.includes("localhost")) {
+            baseUrl = "https://portal.wsp-graz.com";
+        }
+
+        const resetLink = `${baseUrl}/update-password?token=${resetToken}`;
         const emailHtml = EmailTemplates.passwordReset(user.firstName || "Nutzer", resetLink);
 
         await sendEmail({
