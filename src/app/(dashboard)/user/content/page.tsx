@@ -17,43 +17,56 @@ export default function ContentPage() {
                 </p>
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                {MOCK_COURSES.map((course) => (
-                    <Link href={`/user/content/${course.id}`} key={course.id} className="group">
-                        <Card className="h-full border-none shadow-sm hover:shadow-md transition-all duration-300 bg-white rounded-[2rem] overflow-hidden group-hover:-translate-y-1">
-                            {/* Thumbnail Placeholder */}
-                            <div className="h-48 bg-gradient-to-br from-[#163B40] to-[#2CC8C5] relative flex items-center justify-center p-6 text-center">
-                                <PlayCircle className="w-16 h-16 text-white/80 group-hover:scale-110 transition-transform duration-300" />
-                                <div className="absolute bottom-4 right-4 bg-black/30 backdrop-blur-md text-white text-xs font-medium px-2 py-1 rounded-full flex items-center">
-                                    <Clock className="w-3 h-3 mr-1" />
-                                    {course.modules.length > 0 ? "~ 45 Min" : "Coming Soon"}
-                                </div>
-                            </div>
-
-                            <CardContent className="p-6 space-y-4">
-                                <div>
-                                    <span className="text-xs font-semibold text-[#2CC8C5] uppercase tracking-wider">
-                                        {course.category}
-                                    </span>
-                                    <h3 className="text-xl font-bold text-[#163B40] mt-1 group-hover:text-[#2CC8C5] transition-colors">
-                                        {course.title}
-                                    </h3>
+            {MOCK_COURSES.length > 0 ? (
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                    {MOCK_COURSES.map((course) => (
+                        <Link href={`/user/content/${course.id}`} key={course.id} className="group">
+                            <Card className="h-full border-none shadow-sm hover:shadow-md transition-all duration-300 bg-white rounded-[2rem] overflow-hidden group-hover:-translate-y-1">
+                                {/* Thumbnail Placeholder */}
+                                <div className="h-48 bg-gradient-to-br from-[#163B40] to-[#2CC8C5] relative flex items-center justify-center p-6 text-center">
+                                    <PlayCircle className="w-16 h-16 text-white/80 group-hover:scale-110 transition-transform duration-300" />
+                                    <div className="absolute bottom-4 right-4 bg-black/30 backdrop-blur-md text-white text-xs font-medium px-2 py-1 rounded-full flex items-center">
+                                        <Clock className="w-3 h-3 mr-1" />
+                                        {course.modules.length > 0 ? "~ 45 Min" : "Coming Soon"}
+                                    </div>
                                 </div>
 
-                                <p className="text-sm text-gray-500 line-clamp-2">
-                                    {course.description}
-                                </p>
+                                <CardContent className="p-6 space-y-4">
+                                    <div>
+                                        <span className="text-xs font-semibold text-[#2CC8C5] uppercase tracking-wider">
+                                            {course.category}
+                                        </span>
+                                        <h3 className="text-xl font-bold text-[#163B40] mt-1 group-hover:text-[#2CC8C5] transition-colors">
+                                            {course.title}
+                                        </h3>
+                                    </div>
 
-                                <div className="pt-2">
-                                    <Button variant="ghost" className="p-0 text-[#163B40] font-semibold hover:bg-transparent hover:text-[#2CC8C5] group-hover:translate-x-1 transition-all">
-                                        Zum Kurs <ArrowRight className="w-4 h-4 ml-1" />
-                                    </Button>
-                                </div>
-                            </CardContent>
-                        </Card>
-                    </Link>
-                ))}
-            </div>
+                                    <p className="text-sm text-gray-500 line-clamp-2">
+                                        {course.description}
+                                    </p>
+
+                                    <div className="pt-2">
+                                        <Button variant="ghost" className="p-0 text-[#163B40] font-semibold hover:bg-transparent hover:text-[#2CC8C5] group-hover:translate-x-1 transition-all">
+                                            Zum Kurs <ArrowRight className="w-4 h-4 ml-1" />
+                                        </Button>
+                                    </div>
+                                </CardContent>
+                            </Card>
+                        </Link>
+                    ))}
+                </div>
+            ) : (
+                <div className="text-center py-20 bg-gray-50 rounded-[2rem] border-2 border-dashed border-gray-200">
+                    <div className="bg-white p-4 rounded-full inline-flex mb-4">
+                        <PlayCircle className="w-8 h-8 text-gray-300" />
+                    </div>
+                    <h3 className="text-lg font-bold text-[#163B40]">Hier entsteht etwas Großes!</h3>
+                    <p className="text-gray-500 mt-2 max-w-md mx-auto">
+                        Wir produzieren gerade exklusive Inhalte für dich.
+                        Schau bald wieder vorbei!
+                    </p>
+                </div>
+            )}
         </div>
     );
 }

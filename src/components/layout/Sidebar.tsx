@@ -53,7 +53,6 @@ export function Sidebar({ userRole, className, unreadNotifications = 0 }: Sideba
             case "USER":
                 return [
                     { name: "Mein Training", href: "/user/dashboard", icon: Calendar },
-                    { name: "Termine Buchen", href: "/user/booking", icon: Calendar },
                     { name: "Shop", href: "/user/shop", icon: ShoppingBag },
                     { name: "Wissen", href: "/user/content", icon: FileText },
                 ];

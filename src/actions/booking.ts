@@ -20,22 +20,42 @@ export async function getAvailableSlots(date: Date) {
                 date: queryDate,
                 isBlocked: false,
                 type: 'NORMAL', // Only show normal slots to users/B2C
-                startTime: {
-                    gt: new Date() // Hide past slots
-                }
+                // Removed database-level startTime check due to 1970 date issue
             },
             orderBy: {
                 startTime: 'asc'
             }
         });
 
-        // Map to simple strings "HH:mm" for the UI, but we also need ID for booking
-        return slots.map(slot => ({
-            id: slot.id,
-            // Force UTC extraction to avoid timezone shifts (Server Time vs Display Time)
-            time: slot.startTime.toISOString().substring(11, 16),
-            available: (slot.bookedCount < slot.globalCapacity) // Simple check
-        }));
+        // Current time for filtering
+        const now = new Date();
+
+        // Map to simple strings "HH:mm" and filter past slots strictly in memory
+        return slots
+            .filter(slot => {
+                // Construct Full Date for the Slot
+                // slot.date is the day (e.g. 2026-01-22)
+                // slot.startTime is the time (on 1970-01-01)
+
+                const slotDateTime = new Date(slot.date);
+                const timeComponent = new Date(slot.startTime);
+
+                slotDateTime.setHours(
+                    timeComponent.getUTCHours(),
+                    timeComponent.getUTCMinutes(),
+                    0,
+                    0
+                );
+
+                // Only keep slots in the future
+                return slotDateTime > now;
+            })
+            .map(slot => ({
+                id: slot.id,
+                // Force UTC extraction to avoid timezone shifts (Server Time vs Display Time)
+                time: slot.startTime.toISOString().substring(11, 16),
+                available: (slot.bookedCount < slot.globalCapacity) // Simple check
+            }));
 
     } catch (error) {
         console.error("Error fetching slots:", error);
